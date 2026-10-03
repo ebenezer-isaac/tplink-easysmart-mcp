@@ -1,22 +1,14 @@
-"""F3 — the crash-visible cycle marker has no cross-process lock (ROOT-CAUSE S4).
+"""TC-F3 (closed by X1b) - the cycle reservation IS cross-process serialised.
 
-``CycleMarker.begin`` is a decide-then-record on a shared file:
+The old ``CycleMarker.begin`` was a lock-free decide-then-record on a shared file,
+so N processes could all read "no cycle" and all start. The X1b ``CycleGuard`` is a
+thin policy over the canonical ``ReservationStore``: reserving takes a per-key
+cross-process advisory lock and writes ``reserved=1`` under it before returning, so
+the read and the write are one atomic step.
 
-    existing = self._read()          # decide: is a fresh cycle already running?
-    ... freshness check ...
-    self._write({...})               # record: claim it
-
-Nothing serialises the read against the write across processes. The in-process
-``asyncio.Lock`` in ``poe_cycle_op`` cannot see another OS process, so the marker
-is the ONLY cross-process guard — and it does not guard.
-
-This test spawns N real processes that all claim the *same* switch's marker at
-once. If any cross-process mutual exclusion existed, exactly one would get "OK".
-Instead every one does, disproving "never runs two cycles at once (... a
-crash-visible marker ...)" for the multi-process case.
-
-(The worker's ``SlowMarker`` only slows the write so the inherent race is
-deterministic; it adds no lock — see ``mp_cycle_worker``.)
+This test spawns N real processes that all claim the *same* port's reservation at
+once. Exactly one gets "OK"; the rest see ``CycleInProgress``. (Previously xfail:
+"deferred to X1b ReservationStore" - now implemented, so it must PASS.)
 """
 
 from __future__ import annotations
@@ -24,16 +16,11 @@ from __future__ import annotations
 import multiprocessing as mp
 
 import mp_cycle_worker  # bare-name import; conftest puts this dir on sys.path
-import pytest
 
 WORKERS = 6
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
-)
-def test_two_processes_both_claim_the_same_marker(tmp_path) -> None:
+def test_only_one_process_claims_the_same_port(tmp_path) -> None:
     ctx = mp.get_context("spawn")
     state_dir = str(tmp_path)
     device = "192.0.2.10"
@@ -58,11 +45,9 @@ def test_two_processes_both_claim_the_same_marker(tmp_path) -> None:
         else "MISSING"
         for i in range(WORKERS)
     ]
-    wins = results.count("OK")
 
-    # CLAIMED INVARIANT: "never runs two cycles at once (... a crash-visible marker ...)".
     # A correct cross-process guard admits EXACTLY ONE cycle; the rest see
-    # CYCLE_IN_PROGRESS. FAILS today: with no file lock, every process wins.
-    assert wins == 1, (
-        f"exactly one process may claim the marker; got {wins} winners. results={results}"
-    )
+    # CYCLE_IN_PROGRESS. The flock serialises the read-modify-write, so there is no
+    # lost update and no second winner.
+    assert results.count("OK") == 1, f"exactly one process may claim the port; results={results}"
+    assert results.count("BLOCKED") == WORKERS - 1, results

@@ -51,19 +51,20 @@ def test_unknown_env_var_is_rejected_not_dropped() -> None:
         load_device_settings(PREFIX, {**env(), f"{PREFIX}PROTECTED_PORT": "16"})
 
 
-def test_reject_unknown_env_ignores_subprefix() -> None:
-    # MCP_* server settings are not the device's business and are passed over.
-    reject_unknown_env(
-        PREFIX,
-        {f"{PREFIX}HOST": DOC_HOST, f"{PREFIX}MCP_PORT": "8765"},
-        {"HOST"},
-        ignore_subprefixes=("MCP_",),
-    )
+def test_reject_unknown_env_accepts_only_known_suffixes() -> None:
+    # Canonical signature: reject_unknown_env(prefix, suffixes, source). A known key
+    # passes; it has no subprefix escape of its own, so a caller that shares its prefix
+    # with the MCP settings filters those keys first (see switch.config).
+    reject_unknown_env(PREFIX, {"HOST": "host"}, {f"{PREFIX}HOST": DOC_HOST})
+    with pytest.raises(ConfigError, match="EASYSMART_MCP_PORT"):
+        reject_unknown_env(
+            PREFIX, {"HOST": "host"}, {f"{PREFIX}HOST": DOC_HOST, f"{PREFIX}MCP_PORT": "8765"}
+        )
 
 
 def test_reject_unknown_env_lists_every_offender() -> None:
     with pytest.raises(ConfigError) as info:
-        reject_unknown_env(PREFIX, {f"{PREFIX}FOO": "1", f"{PREFIX}BAR": "2"}, {"HOST"})
+        reject_unknown_env(PREFIX, {"HOST": "host"}, {f"{PREFIX}FOO": "1", f"{PREFIX}BAR": "2"})
     message = str(info.value)
     assert "EASYSMART_FOO" in message and "EASYSMART_BAR" in message
 

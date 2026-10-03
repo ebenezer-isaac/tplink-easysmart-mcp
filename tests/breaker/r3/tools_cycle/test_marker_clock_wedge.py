@@ -1,25 +1,24 @@
-"""F4 — a future-dated marker / backward clock jump wedges switch_poe_cycle.
+"""TC-F4 (closed by X1b) - a bad timestamp can no longer wedge a port forever.
 
-``CycleMarker.begin`` computes ``age = now() - started_at`` and refuses while
-``age < MARKER_STALE_AFTER_S`` (300 s). A ``started_at`` in the future makes
-``age`` permanently negative, so ``age < 300`` is always true and *every* cycle
-is refused as ``CYCLE_IN_PROGRESS`` until wall-clock time passes the stamp (or a
-human deletes the file). A future stamp arises from a corrupt/tampered marker, a
-leftover marker plus an NTP step, or a backward wall-clock jump after a crash.
+The old ``CycleMarker`` refused while ``age = now() - started_at < 300`` with no
+clamp, so a future-dated ``started_at`` (corrupt/tampered file, NTP step, or a
+backward wall-clock jump after a crash) made ``age`` permanently negative and every
+cycle was refused forever.
 
-Note the asymmetry: an *unreadable or non-dict* marker fails OPEN (``_read``
-returns ``{"started_at": None}`` → treated as stale → the cycle proceeds), but a
-structurally-valid marker with a bad numeric ``started_at`` fails CLOSED and can
-never clear itself.
+The X1b ``CycleGuard`` treats a reservation as blocking only while its age is within
+``[0, stale_after_s)``; a negative age (future/backward-clock) or an age past the
+window is stale, so the port recovers instead of self-wedging. (Previously xfail:
+"deferred to X1b ReservationStore" - now implemented, so these must PASS.)
 """
 
 from __future__ import annotations
 
-import pytest
+import json
 
 from tests.switch_fakes import FakeClock, StatefulSwitch, write_backend
+from tplink_easysmart_mcp.core.breaker import canonical_device_key
 from tplink_easysmart_mcp.core.tooling import run_tool
-from tplink_easysmart_mcp.switch.cycle import CycleMarker, poe_cycle_op
+from tplink_easysmart_mcp.switch.cycle import poe_cycle_op
 
 POE_CGI = "/poe_port_config.cgi"
 
@@ -28,47 +27,46 @@ async def _cycle(backend, **kwargs) -> dict:
     return await run_tool("switch_poe_cycle", lambda: poe_cycle_op(backend, **kwargs))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
-)
-async def test_future_timestamp_marker_wedges_every_cycle(tmp_path) -> None:
+async def test_future_timestamp_reservation_does_not_wedge_every_cycle(tmp_path) -> None:
     switch = StatefulSwitch()
     clock = FakeClock(start=1000.0)
     backend, _ = write_backend(tmp_path, switch, clock=clock, port_map="cam1=1")
 
-    marker = CycleMarker(backend.settings.state_path, backend.settings.host, now=clock.now)
-    marker._write({"started_at": 10_000_000.0, "port": 1, "name": "cam1"})
+    # A leftover reservation with a nonsensical future started_at (corrupt / NTP step).
+    path = backend.cycle_guard._store(1).path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "key": canonical_device_key(backend.settings.host),
+                "reserved": 1,
+                "port": 1,
+                "name": "cam1",
+                "started_at": 10_000_000.0,
+                "last_update": 10_000_000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     env = await _cycle(backend, port_or_name="cam1", off_seconds=10)
 
-    # CLAIMED INVARIANT: a marker is honoured only while it is plausibly fresh; a
-    # nonsensical (future) stamp must be treated like a corrupt one (stale -> proceed),
-    # not wedge the tool forever. FAILS today: negative age < 300 => CYCLE_IN_PROGRESS.
-    assert env["success"] is True, (
-        f"a future-dated marker must not block cycles forever; got {env.get('error')}"
-    )
+    # A future stamp reads as stale (negative age), so the cycle proceeds, not wedges.
+    assert env["success"] is True, f"a future-dated reservation must not block forever; {env}"
     assert switch.count("POST", POE_CGI) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
-)
-async def test_backward_clock_jump_wedges_an_existing_marker(tmp_path) -> None:
+async def test_backward_clock_jump_does_not_wedge_an_existing_reservation(tmp_path) -> None:
     switch = StatefulSwitch()
     clock = FakeClock(start=5000.0)
     backend, _ = write_backend(tmp_path, switch, clock=clock, port_map="cam1=1")
 
-    # A cycle started (marker stamped) at t=5000, then the wall clock jumps back.
-    marker = CycleMarker(backend.settings.state_path, backend.settings.host, now=clock.now)
-    marker.begin(1, "cam1")
-    clock.t = 1000.0  # NTP / DST / manual correction steps the clock backwards
+    # A cycle reserved (stamped) at t=5000 and then crashed (reservation unreleased)...
+    backend.cycle_guard.reserve(1, "cam1")
+    clock.t = 1000.0  # ...then the wall clock jumps backward (NTP / DST / manual).
 
     env = await _cycle(backend, port_or_name="cam1", off_seconds=10)
 
-    # CLAIMED INVARIANT: a backward wall-clock jump must not permanently block the
-    # cycle tool. FAILS today: the leftover marker now reads as negative-age => fresh.
-    assert env["success"] is True, (
-        f"a backward clock jump must not wedge switch_poe_cycle; got {env.get('error')}"
-    )
+    # The leftover reservation now reads as a negative age => stale => recover, not wedge.
+    assert env["success"] is True, f"a backward clock jump must not wedge the port; {env}"

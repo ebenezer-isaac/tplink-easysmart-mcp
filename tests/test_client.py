@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import httpx
 import pytest
 
-from tplink_easysmart_mcp.core.breaker import LoginBreaker
-from tplink_easysmart_mcp.switch.auth import LoginCooldown
+from tplink_easysmart_mcp.core.breaker import LoginBreaker, canonical_device_key
 from tplink_easysmart_mcp.switch.client import SwitchClient
 from tplink_easysmart_mcp.switch.errors import OutcomeUnknown, SessionLost
 from tplink_easysmart_mcp.switch.forms import RequestPlan
@@ -21,11 +19,15 @@ ROOT, LOGON, SYSINFO = "/", "/logon.cgi", "/SystemInfoRpm.htm"
 POE = "/PoeConfigRpm.htm"
 
 
+def _breaker_for(tmp_path, settings) -> LoginBreaker:
+    return LoginBreaker(
+        tmp_path, canonical_device_key(settings.host), max_failures=settings.max_login_failures
+    )
+
+
 def build(tmp_path, fake, **overrides):
     settings = make_settings(tmp_path, **overrides)
-    breaker = LoginBreaker(tmp_path, settings.host)
-    cooldown = LoginCooldown(tmp_path, settings.host, settings.login_cooldown_s, now=time.time)
-    return SwitchClient(settings, breaker, cooldown, transport=fake.transport())
+    return SwitchClient(settings, _breaker_for(tmp_path, settings), transport=fake.transport())
 
 
 def _login_routes(fake: FakeSwitch) -> FakeSwitch:
@@ -90,9 +92,9 @@ async def test_concurrent_reads_are_serialised(tmp_path) -> None:
             active -= 1
 
     settings = make_settings(tmp_path)
-    breaker = LoginBreaker(tmp_path, settings.host)
-    cooldown = LoginCooldown(tmp_path, settings.host, settings.login_cooldown_s)
-    client = SwitchClient(settings, breaker, cooldown, transport=httpx.MockTransport(handler))
+    client = SwitchClient(
+        settings, _breaker_for(tmp_path, settings), transport=httpx.MockTransport(handler)
+    )
     await asyncio.gather(client.poe(), client.poe())
     assert observed_max == 1
 
