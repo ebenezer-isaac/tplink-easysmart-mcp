@@ -1,5 +1,6 @@
 {
   "description": "Local, browser-free MCP server for TP-Link Easy Smart PoE switches (TL-SG1016PE): read ports/stats/PoE and power-cycle cameras, read-first and write-gated.",
+  "homepage": "https://github.com/ebenezer-isaac/tplink-easysmart-mcp",
   "topics": [
     "mcp",
     "model-context-protocol",
