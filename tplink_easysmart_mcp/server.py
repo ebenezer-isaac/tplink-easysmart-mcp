@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .core.config import GlobalSettings
 from .core.tooling import run_tool
+from .core.types import ConfirmWrite
 from .core.write_gate import check_write_gate
 from .switch.backend import EasySmartSwitchBackend
 from .switch.config import SwitchSettings
@@ -133,8 +134,12 @@ def build_server(
     @mcp.tool(name="switch_resolve_port")
     async def _resolve_port(name_or_port: int | str) -> dict:
         """Read-only helper: resolve a port number or PORT_MAP name to {port, name,
-        is_poe, protected, max_port}. UNKNOWN_PORT lists the known names; an
-        out-of-range number is INVALID_PORT. Does not mutate."""
+        is_poe, protected, max_port}. Resolution is type-stable: an integer or a
+        string of digits is ALWAYS a port number (never a name), so 3 and "3" mean
+        the same physical port and a numeric name can never shadow one. A non-digit
+        string is a case-insensitive name. UNKNOWN_PORT lists the known names;
+        AMBIGUOUS_NAME if a name maps to more than one port; an out-of-range number
+        is INVALID_PORT. Does not mutate."""
         return await run_tool(
             "switch_resolve_port",
             lambda: resolve_port_op(device_backend, name_or_port=name_or_port),
@@ -143,7 +148,7 @@ def build_server(
     # ---- write tools: both gates checked here, before any network call ----------
 
     @mcp.tool(name="switch_set_poe")
-    async def _set_poe(port: int | str, enabled: bool, confirm_write: bool = False) -> dict:
+    async def _set_poe(port: int | str, enabled: bool, confirm_write: ConfirmWrite = False) -> dict:
         """MUTATES PoE on one port. Reads the live PoE page, re-sends the port's
         current priority and power limit, and changes only on/off, then verifies
         (WRITE_VERIFY_FAILED if priority/limit were clobbered). Refuses a non-PoE
@@ -158,7 +163,9 @@ def build_server(
         )
 
     @mcp.tool(name="switch_set_port")
-    async def _set_port(port: int | str, enabled: bool, confirm_write: bool = False) -> dict:
+    async def _set_port(
+        port: int | str, enabled: bool, confirm_write: ConfirmWrite = False
+    ) -> dict:
         """MUTATES one port's admin state (enable/disable the link). Reads the live
         page, re-sends the port's current speed and flow control, changes only the
         state, then verifies. Refuses a protected port (PROTECTED_PORT). Requires
@@ -172,7 +179,7 @@ def build_server(
 
     @mcp.tool(name="switch_poe_cycle")
     async def _poe_cycle(
-        port_or_name: int | str, off_seconds: int = 10, confirm_write: bool = False
+        port_or_name: int | str, off_seconds: int = 10, confirm_write: ConfirmWrite = False
     ) -> dict:
         """MUTATES: power-cycle one PoE camera (off, wait off_seconds, on, wait for
         power). Resolve a PORT_MAP camera name or port number. Refuses non-PoE
