@@ -39,9 +39,7 @@ def test_vlan_name_containing_marker_is_not_a_login_page() -> None:
 
 def test_system_description_containing_var_marker_parses() -> None:
     """A device description that contains the `var logonInfo` marker must parse."""
-    html = load("system_info.html").replace(
-        "TL-SG1016PE 3.0", f"TL-SG1016PE {VAR_MARKER}"
-    )
+    html = load("system_info.html").replace("TL-SG1016PE 3.0", f"TL-SG1016PE {VAR_MARKER}")
 
     assert pages.classify(html, "info_ds") is PageClass.DATA
 

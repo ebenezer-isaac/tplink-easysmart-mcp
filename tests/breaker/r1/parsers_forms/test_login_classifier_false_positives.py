@@ -46,8 +46,7 @@ def test_static_confirm_input_is_not_restored_account() -> None:
     """
     html = load("login_page.html").replace(
         "</head>",
-        '</head><input type="submit" id="confirmBtn" '
-        'style="display:none" value="Confirm">',
+        '</head><input type="submit" id="confirmBtn" style="display:none" value="Confirm">',
     )
     probe = pages.probe_login_page(html, None)
     assert probe.err_type == 0

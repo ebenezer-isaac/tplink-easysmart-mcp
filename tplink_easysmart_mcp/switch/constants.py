@@ -31,8 +31,10 @@ ANCHOR_VLAN: Final = "qvlan_ds"
 ANCHOR_PVID: Final = "pvid_ds"
 
 # --- Login-page markers ------------------------------------------------------
+# Structural signals (see pages.py): `var logonInfo = [...]` declared in the first
+# script block, and/or a <form> whose action attribute equals LOGON. The raw form
+# action is matched as a parsed attribute value, never as a body substring.
 LOGON_INFO_VAR: Final = "logonInfo"
-LOGON_FORM_ACTION: Final = 'action="/logon.cgi"'
 # `submitForm` is the plain page's own form name and is deliberately NOT here.
 ENCRYPTED_MARKERS: Final = (
     "encryptType",
