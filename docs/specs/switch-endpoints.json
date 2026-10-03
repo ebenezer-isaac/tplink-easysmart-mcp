@@ -1,0 +1,454 @@
+{
+ "_about": "MERGED endpoint map for the TP-Link TL-SG1016PE Easy Smart switch (V1/V3 family). It supersedes router/tl-sg1016pe-endpoints.json: all 27 of that file's capabilities are here, with corrections noted in `_reconciliation`. Plain HTTP :80, no JSON API. Pages embed state as inline `var NAME = VALUE;` JS, and writes go to *.cgi or POSTed *Rpm.htm forms. Confidence: VERIFIED = in the reference client's code (vmakeev/hass_tplink_easy_smart, MIT, @857d27a), in the owner's own fingerprinted login page, or two independent clients agree; INFERRED = seen only on sibling models, or deduced; UNKNOWN = needs an S0 capture. Prose: switch-protocol.md.",
+ "_conventions": {
+  "kind": "page = GET returning HTML with inline vars; cgi = action handler (writes or session ops)",
+  "fields": "request form/query fields for cgi; variables = inline JS vars a page carries",
+  "mutates": "true = changes device state; gated by EASYSMART_ALLOW_WRITES + confirm_write and honours EASYSMART_DRY_RUN",
+  "x10": "values marked x10 are tenths of the unit",
+  "unauth": "every page/cgi except / and /logon.cgi returns the ~15 KB login page (contains `var logonInfo`) when the session is missing, timed out or evicted; HTTP status stays 200",
+  "headers": "send `Referer: http://<host>/` on every request (browser behaviour; one report says logon needs it). Form posts are application/x-www-form-urlencoded"
+ },
+ "endpoints": [
+  {
+   "id": "root",
+   "path": "/",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "logonInfo": "new Array(errType, ?, ?) - errType per logon.cgi; the other two are unexplained (always 0 so far)",
+    "g_Lan": "int",
+    "g_year": "int, copyright year (2022 on the owner's switch)"
+   },
+   "notes": "Unauthenticated: the login page (errType 0). Authenticated: the main frameset (no logonInfo). On cookie-variant firmware this response sets `H_P_SSID=tplink_<...>; Max-Age=600`, which logon.cgi requires. Also the auth_variant probe target (look for encryptType / cryp_new.js / g_tid / plain_password). errType 6 here = restored-account (factory reset) mode: refuse to log in.",
+   "mutates": false,
+   "confidence": "VERIFIED",
+   "source": "owner fingerprint (router/js/tl-sg1016pe/index.html); H_P_SSID: reference issue #49 (TL-SG1428PE)"
+  },
+  {
+   "id": "logon",
+   "path": "/logon.cgi",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "username": "<=16 chars, /^[\\x21-\\x7e]+$/",
+    "password": "6-16 chars, /^[\\x21-\\x7e]+$/ for username; plaintext (FP doOnclick)",
+    "cpassword": "empty string (only used when errType 6 forces a password change)",
+    "logon": "Login"
+   },
+   "response": "Always HTTP 200 + the login page. logonInfo[0]: 0 = ok OR silently ignored (indistinguishable; verify with a data GET), 1 = bad user/password, 2 = user not allowed to login, 3 = user slots full, 4 = sessions full (16 allowed), 5 = session timeout, 6 = password must be changed (account_restored). On success the page's JS redirects to /. Some SG108E builds RST the connection instead of answering.",
+   "mutates": false,
+   "confidence": "VERIFIED (fields/errTypes from owner's login page JS; errType-0 ambiguity from reference issue #49 and the page's own onload logic)",
+   "source": "owner fingerprint; reference coreapi.authenticate; tlsg10x login.go; SwitchDeck sd_tplink.go",
+   "guards": "RESTORED_ACCOUNT_MODE: if the GET / probe (or any logon response) has logonInfo[0]==6, the page is in factory-reset 'New Password/Confirm' mode (submit 'Confirm', account_restored=1). A POST would set the admin password. Never POST; trip the breaker."
+  },
+  {
+   "id": "logout",
+   "path": "/Logout.htm",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {},
+   "response": "login page; clears the server-side session for this client",
+   "mutates": false,
+   "confidence": "INFERRED for TL-SG1016PE (VERIFIED on TL-SG108E via tlsg10x/SwitchDeck and on TL-SE2106 Menu.htm `location.href=\"/Logout.htm\"`)",
+   "source": "tlsg10x logout.go; SwitchDeck Logout(); qwe7002-ai examples/Menu.htm; SD tplink.go:86"
+  },
+  {
+   "id": "system_info",
+   "path": "/SystemInfoRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "info_ds": "{descriStr:[s], macStr:[s], ipStr:[s], netmaskStr:[s], gatewayStr:[s], firmwareStr:[s], hardwareStr:[s]} - every value is a ONE-element array; newer builds add dhcpEnable, dnsStr, workTime"
+   },
+   "mutates": false,
+   "confidence": "VERIFIED",
+   "source": "reference tplink_api.get_device_info; tlsg10x mocked_web.go"
+  },
+  {
+   "id": "port_setting_page",
+   "path": "/PortSettingRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "max_port_num": "int (16)",
+    "port_middle_num": "int, UI layout only",
+    "all_info": "{state:[0|1], trunk_info:[lag id|0], spd_cfg:[speed], spd_act:[speed], fc_cfg:[0|1], fc_act:[0|1]} - arrays are max_port_num+2 long",
+    "speed": "0 link down, 1 auto, 2 10M half, 3 10M full, 4 100M half, 5 100M full, 6 1000M full, 7+ unknown"
+   },
+   "mutates": false,
+   "confidence": "VERIFIED (names/enum); INFERRED (+2 padding on 16-port)",
+   "source": "reference tplink_api.get_port_states + classes.PortSpeed; tlsg10x"
+  },
+  {
+   "id": "port_statistics_page",
+   "path": "/PortStatisticsRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "max_port_num": "int",
+    "all_info": "{state:[0|1], link_status:[speed enum], pkts:[tx_good, tx_bad, rx_good, rx_bad] x port + 2 pad}"
+   },
+   "mutates": false,
+   "confidence": "VERIFIED on TL-SG108E (two clients agree); INFERRED for TL-SG1016PE",
+   "source": "tlsg10x port_stats.go; reference PR #11; tplinkrouterc6u TPLinkSG108EClient (names only)"
+  },
+  {
+   "id": "port_statistics_clear",
+   "path": "/port_statistics_set.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "clear": "Clear"
+   },
+   "mutates": true,
+   "confidence": "INFERRED",
+   "source": "SwitchDeck sd_actions.go. Not exposed as a tool"
+  },
+  {
+   "id": "port_setting_set",
+   "path": "/port_setting.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "portid": "1..max_port_num (one port per call)",
+    "state": "1 enable, 0 disable",
+    "speed": "spd_cfg code 1..6 - RE-SEND the current spd_cfg",
+    "flowcontrol": "1|0 - RE-SEND the current fc_cfg",
+    "apply": "Apply"
+   },
+   "notes": "Query-string GET. All four values are required, so read-modify-write from PortSettingRpm.htm. Disabling the uplink or the server's own port cuts management access; the tool refuses protected ports.",
+   "mutates": true,
+   "confidence": "VERIFIED",
+   "source": "reference tplink_api.set_port_state; SwitchDeck SetPort"
+  },
+  {
+   "id": "poe_config_page",
+   "path": "/PoeConfigRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "poe_port_num": "int (8 on TL-SG1016PE: ports 1-8)",
+    "portConfig": "{state:[1 on|0 off], priority:[0 high|1 middle|2 low], powerlimit:[x10 W; 330 auto, 40/70/154/300 class1-4 presets, else manual], power:[x10 W], current:[mA], voltage:[x10 V], pdclass:[40/70/154/300 class1-4, 330 class0, else '--'], powerstatus:[0..9]} - arrays poe_port_num long",
+    "globalConfig": "{system_power_limit, system_power_consumption, system_power_remain, system_power_limit_min, system_power_limit_max} all x10 W",
+    "powerstatus": "0 off, 1 turning on, 2 on, 3 overload, 4 short, 5 non-standard PD, 6 voltage high, 7 voltage low, 8 hardware fault, 9 over-temperature"
+   },
+   "mutates": false,
+   "confidence": "VERIFIED (names, scales, enums); INFERRED (disabled state value is 0; array length = poe_port_num)",
+   "source": "reference tplink_api.get_port_poe_states/get_poe_state + classes; confirmed working on TL-SG1016PE 3.0 (reference issue #2)"
+  },
+  {
+   "id": "poe_port_config_set",
+   "path": "/poe_port_config.cgi",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "sel_<n>": "1 for each selected port n (send exactly one)",
+    "name_pstate": "2 = enable, 1 = disable",
+    "name_ppriority": "1 high, 2 middle, 3 low (= read value + 1)",
+    "name_ppowerlimit": "1 auto, 2 class1, 3 class2, 4 class3, 5 class4, 6 manual",
+    "name_ppowerlimit2": "manual: watts 0.1-30.0 as decimal string; class presets: '(4w)','(7w)','(15.4w)','(30w)'; auto: see protocol 6.3 (reference sends Python None)",
+    "applay": "Apply (sic - the misspelling is the real field name)"
+   },
+   "notes": "Every field is applied to every selected port, so omitting or guessing priority/limit clobbers them. Always read PoeConfigRpm.htm first and re-send the port's current priority and limit with only name_pstate changed. Response: an HTML page (INFERRED: PoeConfigRpm re-render with `tip`); verify by re-reading.",
+   "mutates": true,
+   "confidence": "VERIFIED (field names, value maps, POST); INFERRED (auto-limit ppowerlimit2 bytes the browser sends)",
+   "source": "reference tplink_api.set_port_poe_settings; switch-prior-art.md"
+  },
+  {
+   "id": "poe_global_config_set",
+   "path": "/poe_global_config.cgi",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "name_powerlimit": "watts, system_power_limit_min..max / 10",
+    "name_powerconsumption": "current consumption W (echoed back)",
+    "name_powerremain": "current remain W (echoed back)",
+    "applay": "Apply"
+   },
+   "mutates": true,
+   "confidence": "VERIFIED",
+   "source": "reference tplink_api.set_poe_limit. Not exposed as a tool"
+  },
+  {
+   "id": "vlan_8021q_page",
+   "path": "/Vlan8021QRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "qvlan_ds": "{state:0|1, portNum:int, vids:[int], count:int, maxVids:int, names:['s'], tagMbrs:[hex bitmask], untagMbrs:[hex bitmask], lagIds:[per port], lagMbrs:[...]} - bit (p-1) = port p; values may be 0x-hex"
+   },
+   "mutates": false,
+   "confidence": "INFERRED for TL-SG1016PE (VERIFIED layout on TL-SE2106 capture and SwitchDeck's SG108E parser)",
+   "source": "qwe7002-ai examples/tplink-*/Vlan8021QRpm.htm; SwitchDeck sd_vlans.go"
+  },
+  {
+   "id": "vlan_8021q_pvid_page",
+   "path": "/Vlan8021QPvidRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "pvid_ds": "{state, portNum, vids:[int], count, mbrs:[bitmask per vid], pvids:[per port], lagIds, lagMbrs}"
+   },
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "qwe7002-ai examples Vlan8021QPvidRpm.htm"
+  },
+  {
+   "id": "vlan_8021q_set_qvlanset",
+   "path": "/qvlanSet.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "enable/disable": "qvlan_en=1|0 & qvlan_mode=Apply",
+    "add/modify": "vid=1..4094 & vname=<=12 chars & selType_<p>=0 untagged|1 tagged|2 not member (every port) & qvlan_add=Add/Modify",
+    "delete": "selVlans=<vid> (repeatable) & qvlan_del=Delete",
+    "token": "only on encrypted-variant firmware (top.g_tid)"
+   },
+   "mutates": true,
+   "confidence": "INFERRED (button labels are English guesses; captured page was Chinese)",
+   "source": "qwe7002-ai plans.ts + captured form. Not exposed as a tool (VLAN is read-only in scope)"
+  },
+  {
+   "id": "vlan_pvid_set",
+   "path": "/vlanPvidSet.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "pbm": "port bitmask",
+    "pvid": "1..4094",
+    "token": "encrypted variant only"
+   },
+   "mutates": true,
+   "confidence": "INFERRED",
+   "source": "qwe7002-ai captured page JS. Not exposed"
+  },
+  {
+   "id": "reboot_page",
+   "path": "/SystemRebootRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {},
+   "notes": "Holds the reboot form. S0 should capture it to settle which reboot request this firmware takes",
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "qwe7002-ai menuList.js (SystemRebootRpm); SwitchDeck"
+  },
+  {
+   "id": "reboot",
+   "path": "/reboot.cgi",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "reboot_op": "reboot",
+    "save_op": "1|0 (save config before reboot?)",
+    "apply": "Reboot"
+   },
+   "notes": "Sources disagree: tplinkrouterc6u uses reboot_op=reboot&save_op=1&apply=Reboot; SwitchDeck uses reboot_op=reboot&save_op=false and, separately, POST /SystemRebootRpm.htm reboot=reboot. The connection is reset as the switch reboots.",
+   "mutates": true,
+   "confidence": "INFERRED",
+   "source": "tplinkrouterc6u TPLinkSG108EClient (names only, GPL); SwitchDeck. Not exposed as a tool"
+  },
+  {
+   "id": "save_config",
+   "path": "/savingconfig.cgi",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "action_op": "save",
+    "token": "encrypted variant only"
+   },
+   "notes": "Present on the newer TL-SE/Mercury UI (SavingConfigRpm.htm). Unknown whether classic TL-SG1016PE has an explicit save or persists every change immediately. S0 checks the menu.",
+   "mutates": true,
+   "confidence": "INFERRED (likely absent on this model)",
+   "source": "qwe7002-ai examples/SavingConfigRpm.htm. Not exposed"
+  },
+  {
+   "id": "ip_settings_page",
+   "path": "/IpSettingRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "ip_ds": "{state(dhcp), ipStr, netmaskStr, gatewayStr, ...}"
+   },
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "C6U _PATH_IP_SETTINGS"
+  },
+  {
+   "id": "poe_port_power_cycle",
+   "path": "/poe_port_config.cgi x2",
+   "method": "composite",
+   "kind": "cgi",
+   "fields": {
+    "step1": "name_pstate=1 + current priority/limit + sel_<p>=1",
+    "wait": "off_seconds (5-120)",
+    "step2": "name_pstate=2 + same tuple"
+   },
+   "notes": "No native per-port PoE reboot exists in any source. Verify via PoeConfigRpm.htm after each step (switch-protocol.md section 7).",
+   "mutates": true,
+   "confidence": "INFERRED (composition of VERIFIED calls)",
+   "source": "derived"
+  },
+  {
+   "id": "vlan_8021q_set_bulk",
+   "path": "/Vlan8021QRpm.htm",
+   "method": "POST",
+   "kind": "cgi",
+   "fields": {
+    "state": "1",
+    "count": "n",
+    "vid<i>": "",
+    "name<i>": "",
+    "tagMbr<i>": "bitmask",
+    "untagMbr<i>": "bitmask",
+    "apply": "apply"
+   },
+   "notes": "SwitchDeck's bulk form for SG108E. Conflicts with qvlanSet.cgi; S0 decides which applies. Not exposed.",
+   "mutates": true,
+   "confidence": "INFERRED",
+   "source": "SD actions.go:40-58"
+  },
+  {
+   "id": "vlan_port_based_page",
+   "path": "/VlanPortBasicRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "pvlan_ds": "{state, portNum, vids, count, mbrs:[bitmask]}"
+   },
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "SD parser/vlans.go ParseVLANPortBased; QWE capture"
+  },
+  {
+   "id": "lag_page",
+   "path": "/PortTrunkRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {
+    "trunk_conf": "LAG table"
+   },
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "SD snapshot; QWE capture"
+  },
+  {
+   "id": "mirror",
+   "path": "/PortMirrorRpm.htm",
+   "method": "GET|POST",
+   "kind": "page",
+   "fields": {
+    "mirrorEn": "",
+    "mirrorPort": "",
+    "mirrorMode": "0|1|2",
+    "ingressMask": "",
+    "egressMask": "",
+    "apply": "Apply"
+   },
+   "mutates": "POST only",
+   "confidence": "INFERRED",
+   "source": "SD actions.go:84, parser/monitoring.go"
+  },
+  {
+   "id": "igmp",
+   "path": "/IgmpSnoopingRpm.htm ; /igmpSnooping.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "igmp_mode": "",
+    "reportSu_mode": "0",
+    "Apply": "Apply"
+   },
+   "variables": {
+    "igmp_ds": ""
+   },
+   "mutates": "cgi only",
+   "confidence": "INFERRED",
+   "source": "SD actions.go:195"
+  },
+  {
+   "id": "loop_prevention",
+   "path": "/LoopPreventionRpm.htm ; /loop_prevention_set.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "lpEn": "0|1",
+    "apply": "Apply"
+   },
+   "variables": {
+    "lpEn": "0|1"
+   },
+   "mutates": "cgi only",
+   "confidence": "INFERRED",
+   "source": "SD actions.go:208"
+  },
+  {
+   "id": "qos_pages",
+   "path": "/QosBasicRpm.htm ; /QosBandWidthControlRpm.htm ; /QosStormControlRpm.htm",
+   "method": "GET",
+   "kind": "page",
+   "variables": {},
+   "notes": "writes: qos_mode_set.cgi, qos_bandwidth_set.cgi, qos_storm_set.cgi (SD)",
+   "mutates": false,
+   "confidence": "INFERRED",
+   "source": "SD snapshot/actions.go:138-183"
+  },
+  {
+   "id": "led",
+   "path": "/TurnOnLEDRpm.htm ; /led_on_set.cgi",
+   "method": "GET",
+   "kind": "cgi",
+   "fields": {
+    "rd_led": "0|1",
+    "led_cfg": "Apply"
+   },
+   "variables": {
+    "led": "0|1"
+   },
+   "mutates": "cgi only",
+   "confidence": "INFERRED",
+   "source": "C6U (names only)"
+  },
+  {
+   "id": "cable_test",
+   "path": "/CableDiagRpm.htm (page-name guess) + unknown action cgi",
+   "method": "unknown",
+   "kind": "page",
+   "notes": "The feature exists on Easy Smart (datasheets list Cable Diagnostics), but no cited library implements it. S0 captures the menu entry and page. Not in v1 tools.",
+   "mutates": false,
+   "confidence": "UNKNOWN",
+   "source": "TP-Link datasheets"
+  }
+ ],
+ "out_of_scope": [
+  {
+   "path": "UDP 29808/29809",
+   "why": "Easy Smart Configuration Utility protocol: broadcast, RC4 with a hardcoded key, credentials recoverable (CVE-2017-8074..8077). Never used by the MCP server."
+  },
+  {
+   "path": "/httpupg.cgi",
+   "why": "firmware upload; pre-auth upload CVE-2017-8078. Never called."
+  },
+  {
+   "path": "/config_back.cgi?btnBackup=Backup+Config",
+   "why": "config backup contains secrets; not exposed"
+  }
+ ],
+ "device": "TP-Link TL-SG1016PE Easy Smart PoE switch; hw rev unconfirmed (login page (c) 2022). Address lives only in the private env file.",
+ "sources": {
+  "REF": "vmakeev/hass_tplink_easy_smart (MIT) custom_components/tplink_easy_smart/client/{const,coreapi,tplink_api,classes}.py @857d27ac (2026-02-10); README lists TL-SG1016PE V1/V3 with PoE. Issues #2/#7 (TL-SG1016PE eviction), #49 (prior GET / H_P_SSID, errType-0 false positive)",
+  "FP": "router/js/tl-sg1016pe/index.html: this device's unauthenticated login page (15,320 B); router/tl-sg1016pe-auth-flow.md gives byte offsets",
+  "SD": "t0mer/SwitchDeck (Apache-2.0) internal/switchclient/tplink/{actions.go,tplink.go,snapshot.go,parser/*.go}; local copies in tools/sd_*.go",
+  "C6U": "tplinkrouterc6u TPLinkSG108EClient (GPL-3.0): page/variable NAMES only, no code",
+  "QWE": "qwe7002-ai/tplink-easy-smart-switch-mcp (no license): real TL-SE2106 page captures and the encrypted-login variant. Read only",
+  "TLSG": "0ghny/tlsg10x (MIT, Go, SG108E)",
+  "SMRT": "pklaus/smrt: UDP 29808/29809 utility protocol (out of scope)"
+ },
+ "_reconciliation": [
+  "portConfig READ encodings: the old file listed priority as 1|2|3 and powerlimit as 1..6. Those are the WRITE codes. REF classes.py reads priority 0=High 1=Middle 2=Low, and powerlimit as tenths of a watt (330 auto; 40/70/154/300 class presets; else manual). The write side maps them with +1 and the 1..6 code table (REF tplink_api _POE_PRIORITIES_SET_MAP / _POE_POWER_LIMITS_SET_MAP). VERIFIED. There is no 'powerlimit2' read key.",
+  "Confidence was raised to VERIFIED where REF code implements the call and REF issue #2 confirms a TL-SG1016PE 3.0 works (system_info, PoeConfigRpm, poe_port_config.cgi, poe_global_config.cgi, PortSettingRpm, port_setting.cgi).",
+  "Login: the password is 6-16 chars, and in restored-account mode (errType 6) the submit value becomes 'Confirm' and the POST SETS the password. Hard guard: never POST when GET / shows errType 6 (FP @10015).",
+  "/Vlan8021QPvidRpm.htm (pvid_ds) was UNKNOWN; it is now INFERRED from QWE's real TL-SE2106 capture.",
+  "VLAN write: two incompatible shapes exist (SD bulk POST /Vlan8021QRpm.htm vs QWE per-VLAN GET qvlanSet.cgi). Both are kept and marked INFERRED. Not exposed in v1."
+ ]
+}

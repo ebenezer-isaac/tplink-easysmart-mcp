@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<script>
+var poe_port_num = 8;
+var portConfig = {
+state:[1,1,1,1,1,1,1,0],
+priority:[0,1,2,2,2,2,2,0],
+powerlimit:[330,330,154,330,255,330,300,330],
+power:[41,62,128,0,89,0,0,0],
+current:[79,119,245,0,171,0,0,0],
+voltage:[523,522,521,0,520,0,0,0],
+pdclass:[330,70,154,0,300,0,300,0],
+powerstatus:[2,2,2,0,2,5,3,0]
+};
+var globalConfig = {
+system_power_limit:400,
+system_power_consumption:320,
+system_power_remain:80,
+system_power_limit_min:10,
+system_power_limit_max:1100
+};
+var tip = "";
+</script>
+<html><head><title>PoE Config</title></head><body>
+<form name=poe_port_config action=poe_port_config.cgi method=post></form>
+<form name=poe_global_config action=poe_global_config.cgi method=post></form>
+</body></html>
+<!-- SYNTHETIC fixture for parser TDD. Not captured from a device. -->

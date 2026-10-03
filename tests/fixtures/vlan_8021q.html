@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<script>
+var qvlan_ds = {
+state:1,
+portNum:16,
+vids:[
+1,10,20
+],
+count:3,
+maxVids:32,
+names:[
+'Default','cams','mgmt'
+],
+tagMbrs:[
+0x0,0x8000,0x8000
+],
+untagMbrs:[
+0xff00,0xff,0x0
+],
+lagIds:[
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+],
+lagMbrs:[
+0,0x0
+]
+};var tip = "";
+</script>
+<html><head><title>802.1Q VLAN</title></head><body>
+<form action=qvlanSet.cgi></form>
+</body></html>
+<!-- SYNTHETIC fixture for parser TDD. Not captured from a device. -->

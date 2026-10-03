@@ -1,0 +1,50 @@
+# Example systemd unit. Copy to /etc/systemd/system/tplink-easysmart-mcp.service.
+#
+#   sudo useradd --system --home /var/lib/tplink-easysmart-mcp --shell /usr/sbin/nologin easysmartmcp
+#   sudo install -m 0600 -o easysmartmcp -g easysmartmcp .env.example /etc/tplink-easysmart-mcp.env
+#   (edit /etc/tplink-easysmart-mcp.env, then)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tplink-easysmart-mcp
+#
+# The switch login is CLEARTEXT. Run this only on the wired LAN host that reaches
+# the switch. The HTTP transport binds to loopback; reach it over Tailscale or an
+# SSH tunnel, never by exposing it on the LAN: the server has no auth of its own.
+
+[Unit]
+Description=tplink-easysmart-mcp (MCP server for a local TP-Link Easy Smart switch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=easysmartmcp
+Group=easysmartmcp
+EnvironmentFile=/etc/tplink-easysmart-mcp.env
+Environment=EASYSMART_MCP_TRANSPORT=streamable-http
+Environment=EASYSMART_MCP_HOST=127.0.0.1
+Environment=EASYSMART_STATE_DIR=/var/lib/tplink-easysmart-mcp/state
+WorkingDirectory=/var/lib/tplink-easysmart-mcp
+StateDirectory=tplink-easysmart-mcp
+StateDirectoryMode=0700
+ExecStart=/opt/tplink-easysmart-mcp/.venv/bin/tplink-easysmart-mcp
+Restart=on-failure
+RestartSec=10
+# Do not hammer a device that is rejecting logins: cap restarts.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tplink-easysmart-mcp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

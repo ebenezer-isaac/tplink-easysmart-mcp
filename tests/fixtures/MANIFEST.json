@@ -1,0 +1,108 @@
+{
+  "_about": "SYNTHETIC, anonymised Easy Smart (TL-SG1016PE-shaped) pages for parser TDD. 16 ports, PoE on 1-8. Layouts follow the shapes parsed by vmakeev/hass_tplink_easy_smart (MIT) and the qwe7002-ai example captures, plus the owner's real unauthenticated login page (fingerprint). All values invented; MAC 00:00:5E:00:53:xx and IP 192.0.2.x only. Every file ends with an HTML comment marking it synthetic. Regenerate with switch/_work/gen_fixtures.py. S0 replaces/augments these with sanitised LIVE captures under tests/fixtures/easysmart_switch/live/.",
+  "_conventions": {
+    "x10": "power, voltage, powerlimit, system_power_* are tenths (330 -> 33.0 W, 523 -> 52.3 V)",
+    "padding": "per-port arrays on PortSettingRpm/PortStatisticsRpm carry max_port_num+2 entries; parser uses the first max_port_num and requires len >= max_port_num",
+    "pkts": "4 per port in order tx_good, tx_bad, rx_good, rx_bad, plus 2 trailing pad slots",
+    "priority_read": "0=high 1=middle 2=low (write values are +1)",
+    "pdclass": "40=class1 70=class2 154=class3 300=class4 330=class0, anything else -> null (UI shows '--')",
+    "powerstatus": "0 off,1 turning_on,2 on,3 overload,4 short,5 nonstandard_pd,6 voltage_high,7 voltage_low,8 hardware_fault,9 overtemperature"
+  },
+  "fixtures": {
+    "login_page.html": {
+      "served_for": "GET / unauthenticated; also GET <any *Rpm.htm> and GET /Logout.htm when not logged in",
+      "expect": {"is_login_page": true, "logon_err_type": 0, "login_mode": "normal", "auth_variant": "plain_form", "form_fields": ["username", "password", "cpassword", "logon"]}
+    },
+    "logon_response_errtype0.html": {
+      "served_for": "POST /logon.cgi when login SUCCEEDED and also when the POST was silently IGNORED (cookie variant without prior GET /). Identical bytes: errType 0 is NOT proof of success",
+      "expect": {"is_login_page": true, "logon_err_type": 0, "login_outcome": "needs_verification"}
+    },
+    "logon_response_errtype1_bad_credentials.html": {"expect": {"logon_err_type": 1, "error_code": "AUTH_FAILED", "breaker": "trip", "retry": false}},
+    "logon_response_errtype2_user_blocked.html": {"expect": {"logon_err_type": 2, "error_code": "LOCKED_OUT", "breaker": "trip", "retry": false}},
+    "logon_response_errtype4_sessions_full.html": {"expect": {"logon_err_type": 4, "error_code": "SESSIONS_FULL", "breaker": "rate_limit_5min", "retry": false}},
+    "logon_response_errtype6_password_change.html": {"expect": {"logon_err_type": 6, "error_code": "RESTORED_ACCOUNT_MODE", "breaker": "trip", "retry": false, "further_posts": 0}},
+    "login_page_restored_account.html": {
+      "served_for": "GET / after a factory reset. errType 6 makes the page's JS switch to 'New Password / Confirm Password' (submit value 'Confirm', account_restored=1): a POST now would SET the admin password",
+      "expect": {"is_login_page": true, "logon_err_type": 6, "login_mode": "restored_account", "error_code": "RESTORED_ACCOUNT_MODE", "posts_to_logon_cgi": 0, "breaker": "trip"}
+    },
+    "login_page_encrypted_variant.html": {
+      "served_for": "INFERRED newer-firmware login (cryp_new.js / encryptType / g_tid). Shape is a guess built from qwe7002-ai's detection markers",
+      "expect": {"is_login_page": true, "auth_variant": "encrypted", "error_code": "AUTH_VARIANT_UNSUPPORTED", "network_calls_after_probe": 0}
+    },
+    "poe_config_returned_login_page.html": {
+      "served_for": "GET /PoeConfigRpm.htm after the session was evicted (browser login) or timed out",
+      "expect": {"parse_poe": "raises SessionExpired (not ProtocolError, not empty list)", "client": "exactly one re-login then one retry; a second login page -> SESSION_LOST error"}
+    },
+    "system_info.html": {
+      "expect": {"name": "TL-SG1016PE", "mac": "00:00:5E:00:53:10", "ip": "192.0.2.10", "netmask": "255.255.255.0", "gateway": "192.0.2.1", "firmware": "1.0.0 Build 20000101 Rel.00000", "hardware": "TL-SG1016PE 3.0", "hw_revision": "3.0"}
+    },
+    "system_info_hostile_description.html": {
+      "why": "string value contains ';', escaped quotes, the word var and an escaped </script>. The reference's [^;]+ regex FAILS on this page; our brace/quote-aware extractor must not",
+      "expect": {"name": "lab;sw \"q\" var x=1; </script>", "mac": "00:00:5E:00:53:10", "extra_vars_leaked": []}
+    },
+    "port_setting.html": {
+      "expect": {
+        "max_port_num": 16,
+        "array_len": 18,
+        "ports": {
+          "1": {"enabled": true, "speed_config": "auto", "speed_actual": "100M_full", "link_up": true, "fc_config": false, "fc_actual": false},
+          "4": {"enabled": true, "speed_config": "auto", "speed_actual": "link_down", "link_up": false},
+          "6": {"enabled": true, "speed_actual": "100M_half", "link_up": true},
+          "12": {"enabled": false, "speed_actual": "link_down", "link_up": false},
+          "16": {"enabled": true, "speed_config": "1000M_full", "speed_actual": "1000M_full", "fc_config": true, "fc_actual": true}
+        },
+        "write_example_disable_port_5": "GET /port_setting.cgi?portid=5&state=0&speed=1&flowcontrol=0&apply=Apply"
+      }
+    },
+    "port_statistics.html": {
+      "expect": {
+        "ports": {
+          "1": {"enabled": true, "link": "100M_full", "tx_good": 7013, "tx_bad": 0, "rx_good": 5011, "rx_bad": 0},
+          "6": {"link": "100M_half", "tx_good": 42013, "tx_bad": 1, "rx_good": 30011, "rx_bad": 3},
+          "12": {"enabled": false, "link": "link_down", "tx_good": 0, "rx_good": 0},
+          "16": {"link": "1000M_full", "tx_good": 112013, "rx_good": 80011}
+        },
+        "pkts_len": 66
+      }
+    },
+    "poe_config.html": {
+      "expect": {
+        "poe_port_num": 8,
+        "budget": {"limit_w": 40.0, "consumption_w": 32.0, "remain_w": 8.0, "limit_min_w": 1.0, "limit_max_w": 110.0},
+        "ports": {
+          "1": {"enabled": true, "priority": "high", "power_limit": "auto", "power_w": 4.1, "current_ma": 79, "voltage_v": 52.3, "pd_class": "0", "status": "on"},
+          "2": {"enabled": true, "priority": "middle", "power_limit": "auto", "power_w": 6.2, "current_ma": 119, "voltage_v": 52.2, "pd_class": "2", "status": "on"},
+          "3": {"enabled": true, "priority": "low", "power_limit": "class3", "power_limit_w": 15.4, "power_w": 12.8, "current_ma": 245, "voltage_v": 52.1, "pd_class": "3", "status": "on"},
+          "4": {"enabled": true, "priority": "low", "power_limit": "auto", "power_w": 0.0, "current_ma": 0, "voltage_v": 0.0, "pd_class": null, "status": "off", "case": "enabled but unpowered (no PD)"},
+          "5": {"enabled": true, "priority": "low", "power_limit": "manual", "power_limit_w": 25.5, "power_w": 8.9, "current_ma": 171, "voltage_v": 52.0, "pd_class": "4", "status": "on"},
+          "6": {"enabled": true, "priority": "low", "power_limit": "auto", "power_w": 0.0, "pd_class": null, "status": "nonstandard_pd", "case": "class '--' with a PD present"},
+          "7": {"enabled": true, "priority": "low", "power_limit": "class4", "power_limit_w": 30.0, "power_w": 0.0, "pd_class": "4", "status": "overload", "case": "over budget: class-4 PD needs 30 W, 8 W remain"},
+          "8": {"enabled": false, "priority": "high", "power_limit": "auto", "power_w": 0.0, "pd_class": null, "status": "off", "case": "admin-disabled"}
+        },
+        "rmw_write_examples": {
+          "port1_off": {"sel_1": "1", "name_pstate": "1", "name_ppriority": "1", "name_ppowerlimit": "1", "name_ppowerlimit2": "<AUTO_LIMIT2 constant, see protocol 6.3>", "applay": "Apply"},
+          "port3_on": {"sel_3": "1", "name_pstate": "2", "name_ppriority": "3", "name_ppowerlimit": "4", "name_ppowerlimit2": "(15.4w)", "applay": "Apply"},
+          "port5_off": {"sel_5": "1", "name_pstate": "1", "name_ppriority": "3", "name_ppowerlimit": "6", "name_ppowerlimit2": "25.5", "applay": "Apply"},
+          "port8_on": {"sel_8": "1", "name_pstate": "2", "name_ppriority": "1", "name_ppowerlimit": "1", "name_ppowerlimit2": "<AUTO_LIMIT2>", "applay": "Apply"}
+        }
+      }
+    },
+    "poe_config_truncated_arrays.html": {
+      "why": "power[] has 3 entries but poe_port_num is 8",
+      "expect": {"parse_poe": "raises ProtocolError naming portConfig.power, len 3 < 8; never returns partial rows"}
+    },
+    "vlan_8021q.html": {
+      "expect": {
+        "enabled": true, "port_count": 16, "max_vids": 32,
+        "vlans": [
+          {"vid": 1, "name": "Default", "untagged": [9, 10, 11, 12, 13, 14, 15, 16], "tagged": []},
+          {"vid": 10, "name": "cams", "untagged": [1, 2, 3, 4, 5, 6, 7, 8], "tagged": [16]},
+          {"vid": 20, "name": "mgmt", "untagged": [], "tagged": [16]}
+        ]
+      }
+    },
+    "vlan_8021q_pvid.html": {
+      "expect": {"pvids": {"1": 10, "8": 10, "9": 1, "16": 1}, "members_by_vid": {"1": [9, 10, 11, 12, 13, 14, 15, 16], "10": [1, 2, 3, 4, 5, 6, 7, 8, 16], "20": [16]}}
+    }
+  }
+}
