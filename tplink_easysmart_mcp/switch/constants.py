@@ -31,8 +31,10 @@ ANCHOR_VLAN: Final = "qvlan_ds"
 ANCHOR_PVID: Final = "pvid_ds"
 
 # --- Login-page markers ------------------------------------------------------
+# Structural signals (see pages.py): `var logonInfo = [...]` declared in the first
+# script block, and/or a <form> whose action attribute equals LOGON. The raw form
+# action is matched as a parsed attribute value, never as a body substring.
 LOGON_INFO_VAR: Final = "logonInfo"
-LOGON_FORM_ACTION: Final = 'action="/logon.cgi"'
 # `submitForm` is the plain page's own form name and is deliberately NOT here.
 ENCRYPTED_MARKERS: Final = (
     "encryptType",
@@ -78,3 +80,10 @@ MAX_INPUT_BYTES: Final = 256 * 1024
 MAX_DEPTH: Final = 8
 MAX_ARRAY_ITEMS: Final = 4096
 MAX_IDENT_LEN: Final = 64
+
+# Upper bound on any declared port/entry count read from a page (portNum,
+# max_port_num, poe_port_num, *_num). The TL-SG1016PE has 16 ports; 128 is a
+# generous ceiling that still fences off a hostile page from driving a parser
+# loop (e.g. `_ports_from_mask`'s per-port bignum shift) into a CPU DoS. Every
+# such count flows through `jsvars.declared_count`, which enforces this.
+MAX_DECLARED_PORTS: Final = 128
