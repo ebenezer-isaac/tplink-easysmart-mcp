@@ -86,6 +86,18 @@ def test_each_limit_code_and_limit2(kind, powerlimit_raw, limit_w, code, limit2)
     assert fields["name_ppowerlimit2"] == limit2
 
 
+def test_auto_limit2_is_documented_current_behaviour() -> None:
+    # F5 (breaker r1) is scored Won't-fix: the exact `name_ppowerlimit2` bytes a
+    # browser sends for an AUTO limit are unresolved until S0's live capture. The
+    # builder sends the documented default `""` (tagged `# S0: confirm` in
+    # constants); the reference client's literal `None` is deliberately out of
+    # scope here. This test pins the current behaviour so any change is a
+    # conscious S0-driven decision, not a silent regression.
+    assert AUTO_LIMIT2 == ""
+    port = _poe(limit_kind=PoeLimitKind.AUTO, limit_w=None, powerlimit_raw=330)
+    assert dict(build_poe_port_form(port, True).fields)["name_ppowerlimit2"] == ""
+
+
 def test_manual_equal_to_preset_is_rewritten_as_preset() -> None:
     # A manual 15.4 W reads back as the class-3 preset (154), so RMW re-sends the
     # preset code 4 and "(15.4w)" — documented and effectively identical.
