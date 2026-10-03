@@ -11,7 +11,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -30,6 +31,15 @@ DEVICE_ENV_SUFFIXES: dict[str, str] = {
     "MAX_LOGIN_FAILURES": "max_login_failures",
     "DRY_RUN": "dry_run",
     "BACKUP_DIR": "backup_dir",
+    "STATE_DIR": "state_dir",
+    "TLS_FINGERPRINT_SHA256": "tls_fingerprint_sha256",
+    "RTSP_PORT": "rtsp_port",
+    "RTSP_USERNAME": "rtsp_username",
+    "RTSP_PASSWORD": "rtsp_password",
+    "EXPORT_DIR": "export_dir",
+    "EXPORT_MAX_MINUTES": "export_max_minutes",
+    "EXPORT_RETENTION_DAYS": "export_retention_days",
+    "FFMPEG": "ffmpeg_path",
 }
 GLOBAL_ENV_SUFFIXES: dict[str, str] = {
     "TRANSPORT": "mcp_transport",
@@ -42,7 +52,23 @@ _NUMERIC_DOTTED = re.compile(r"^[\d.]+$")
 _USERNAME = re.compile(r"^[\x21-\x7e]{1,64}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _PREFIX = re.compile(r"^[A-Z][A-Z0-9]*_(?:[A-Z0-9]+_)*$")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 _HOST_ERROR = "must be a hostname or IP address (no scheme, port or path)"
+
+
+def normalise_fingerprint(value: object) -> str:
+    """Normalise a SHA-256 certificate fingerprint: strip colons/whitespace, lower-case.
+
+    Accepts the common ``AA:BB:...`` colon-separated form and bare hex, any case.
+    Raises ``ValueError`` unless the result is exactly 64 hexadecimal characters.
+    """
+    if not isinstance(value, str):
+        raise ValueError("must be a hex string")
+    cleaned = re.sub(r"[\s:]", "", value).lower()
+    if not _HEX64.fullmatch(cleaned):
+        raise ValueError("must be a SHA-256 fingerprint: 64 hex characters, optional colons")
+    return cleaned
+
 
 Port = Annotated[int, Field(ge=1, le=65535)]
 
@@ -81,6 +107,30 @@ class DeviceSettings(BaseModel):
     max_login_failures: int = Field(default=1, ge=1, le=5)
     dry_run: bool = False
     backup_dir: str = Field(default="backups", min_length=1, max_length=1024)
+    state_dir: str | None = Field(default=None, max_length=1024)
+    tls_fingerprint_sha256: str | None = None
+    # --- media / RTSP export (used only by device packages that expose RTSP; other
+    # packages simply never set these variables). Defaults stay generic so this
+    # template file remains device-agnostic. ---
+    rtsp_port: Port = 554
+    rtsp_username: str | None = None
+    rtsp_password: SecretStr | None = Field(default=None, max_length=128)
+    export_dir: str = Field(default="exports", min_length=1, max_length=1024)
+    export_max_minutes: int = Field(default=60, ge=1, le=1440)
+    export_retention_days: int = Field(default=7, ge=1, le=3650)
+    ffmpeg_path: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("tls_fingerprint_sha256", mode="before")
+    @classmethod
+    def _validate_fingerprint(cls, value: object) -> str | None:
+        return None if value is None else normalise_fingerprint(value)
+
+    @field_validator("state_dir")
+    @classmethod
+    def _validate_state_dir(cls, value: str | None) -> str | None:
+        if value is not None and (_CONTROL_CHARS.search(value) or not value.strip()):
+            raise ValueError("must be a non-empty path without control characters")
+        return value
 
     @field_validator("host", mode="before")
     @classmethod
@@ -101,10 +151,31 @@ class DeviceSettings(BaseModel):
             raise ValueError("must not contain control characters")
         return value
 
-    @field_validator("backup_dir")
+    @field_validator("backup_dir", "export_dir")
     @classmethod
-    def _validate_backup_dir(cls, value: str) -> str:
+    def _validate_dir(cls, value: str) -> str:
         if _CONTROL_CHARS.search(value):
+            raise ValueError("must not contain control characters")
+        return value
+
+    @field_validator("ffmpeg_path")
+    @classmethod
+    def _validate_ffmpeg_path(cls, value: str | None) -> str | None:
+        if value is not None and _CONTROL_CHARS.search(value):
+            raise ValueError("must not contain control characters")
+        return value
+
+    @field_validator("rtsp_username")
+    @classmethod
+    def _validate_rtsp_username(cls, value: str | None) -> str | None:
+        if value is not None and not _USERNAME.fullmatch(value):
+            raise ValueError("must be 1-64 printable ASCII characters without spaces")
+        return value
+
+    @field_validator("rtsp_password")
+    @classmethod
+    def _validate_rtsp_password(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and _CONTROL_CHARS.search(value.get_secret_value()):
             raise ValueError("must not contain control characters")
         return value
 
@@ -112,6 +183,27 @@ class DeviceSettings(BaseModel):
     def base_url(self) -> str:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"https://{host}:{self.port}"
+
+    @property
+    def host_for_url(self) -> str:
+        """The host wrapped in brackets if it is an IPv6 literal (for URLs)."""
+        return f"[{self.host}]" if ":" in self.host else self.host
+
+    @property
+    def effective_rtsp_username(self) -> str:
+        """RTSP username, defaulting to the device login username."""
+        return self.rtsp_username or self.username
+
+    @property
+    def effective_rtsp_password(self) -> str:
+        """RTSP password (plaintext), defaulting to the device login password."""
+        secret = self.rtsp_password or self.password
+        return secret.get_secret_value()
+
+    @property
+    def export_path(self) -> Path:
+        """The export directory with ``~`` expanded. Not created here."""
+        return Path(self.export_dir).expanduser()
 
     def env_name(self, suffix: str) -> str:
         return f"{self.env_prefix}{suffix}"
@@ -153,40 +245,31 @@ def host_is_set(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
     return bool(source.get(f"{prefix}HOST", "").strip())
 
 
-def reject_unknown_env(
-    prefix: str,
-    source: Mapping[str, str],
-    known_suffixes: Iterable[str],
-    *,
-    ignore_subprefixes: tuple[str, ...] = (),
-) -> None:
-    """Raise ``ConfigError`` listing any ``<prefix>*`` variable that is not recognised.
+def reject_unknown_env(prefix: str, suffixes: Mapping[str, str], source: Mapping[str, str]) -> None:
+    """Fail loudly if any ``<prefix>*`` variable is not a documented setting.
 
-    A typo such as a singular ``<PREFIX>PROTECTED_PORT`` used to be dropped
-    silently, so the setting never took effect and writes ran unguarded. Keys
-    under an ``ignore_subprefixes`` namespace (e.g. the ``MCP_`` server settings)
-    are not this device's business and are passed over.
-    """
-    known = set(known_suffixes)
-    unknown = sorted(
-        key
-        for key in source
-        if key.startswith(prefix)
-        and key[len(prefix) :] not in known
-        and not any(key.startswith(prefix + sub) for sub in ignore_subprefixes)
-    )
+    Shared by both loaders: a silently-ignored typo in a ``<prefix>*`` name could
+    leave TLS verification, a write gate or the transport in an unintended state,
+    so the unknown names are reported, never dropped. ``suffixes`` is the loader's
+    ``<SUFFIX> -> field`` map."""
+    known = {prefix + suffix for suffix in suffixes}
+    unknown = sorted(k for k in source if k.startswith(prefix) and k not in known)
     if unknown:
         raise ConfigError(
-            "Unknown configuration variable(s): "
-            + ", ".join(unknown)
-            + ". Check for typos; this build does not accept them."
+            f"Unknown {prefix}* variable(s): {', '.join(unknown)}. "
+            "Only documented settings are accepted; check for typos."
         )
 
 
 def load_device_settings(prefix: str, environ: Mapping[str, str] | None = None) -> DeviceSettings:
-    """Build DeviceSettings from ``<prefix>*`` variables. Fails fast."""
+    """Build DeviceSettings from ``<prefix>*`` variables. Fails fast.
+
+    Any variable that starts with ``prefix`` but is not a documented setting is an
+    error (a silently-ignored typo could leave TLS verification or a write gate in
+    an unintended state), so the unknown names are reported rather than dropped.
+    """
     source = os.environ if environ is None else environ
-    reject_unknown_env(prefix, source, DEVICE_ENV_SUFFIXES, ignore_subprefixes=("MCP_",))
+    reject_unknown_env(prefix, DEVICE_ENV_SUFFIXES, source)
     raw: dict[str, object] = {
         field: source[prefix + suffix]
         for suffix, field in DEVICE_ENV_SUFFIXES.items()
@@ -204,6 +287,7 @@ def load_global_settings(prefix: str, environ: Mapping[str, str] | None = None) 
     if not _PREFIX.fullmatch(prefix):
         raise ConfigError(f"invalid environment prefix {prefix!r}")
     source = os.environ if environ is None else environ
+    reject_unknown_env(prefix, GLOBAL_ENV_SUFFIXES, source)
     raw = {
         field: source[prefix + suffix]
         for suffix, field in GLOBAL_ENV_SUFFIXES.items()

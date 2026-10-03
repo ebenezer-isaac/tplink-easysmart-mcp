@@ -8,10 +8,13 @@ from tplink_easysmart_mcp.core.config import load_device_settings
 from tplink_easysmart_mcp.core.errors import (
     ApiError,
     AuthFailed,
+    BreakerOpen,
+    InvalidInput,
     LockoutGuard,
     PreconditionFailed,
     TokenExpired,
 )
+from tplink_easysmart_mcp.core.state import Outcome
 from tplink_easysmart_mcp.core.tooling import run_tool
 from tplink_easysmart_mcp.core.write_gate import check_write_gate
 
@@ -114,29 +117,34 @@ def test_write_gate_passes_with_both_keys() -> None:
 # ---- file-backed login breaker --------------------------------------------------
 
 
-def test_breaker_starts_closed_and_check_passes(tmp_path) -> None:
-    b = breaker.LoginBreaker(tmp_path, "192.0.2.10")
-    assert b.is_open is False
-    b.check()  # does not raise
+def test_breaker_starts_closed_and_reserve_passes(tmp_path) -> None:
+    b = breaker.LoginBreaker(tmp_path, "192.0.2.10", max_failures=2)
     assert not b.path.exists()
+    assert b.status()["state"] == "closed"
+    b.reserve_attempt().release(Outcome.SUCCESS)  # does not raise
+    assert b.status()["state"] == "closed"
 
 
 def test_breaker_trips_and_blocks_then_clears(tmp_path) -> None:
     b = breaker.LoginBreaker(tmp_path, "192.0.2.10")
-    b.record_failure({"code": "AUTH_FAILED", "err_type": 1})
-    assert b.is_open is True
-    with pytest.raises(LockoutGuard):
-        b.check()
+    b.reserve_attempt().release(Outcome.FAILURE, failure={"code": "AUTH_FAILED", "err_type": 1})
+    assert b.status()["state"] == "open"
+    with pytest.raises(BreakerOpen):
+        b.reserve_attempt()
     b.clear()
-    assert b.is_open is False
-    b.check()
+    assert b.status()["state"] == "closed"
+    b.reserve_attempt().release(Outcome.SUCCESS)  # admits again
 
 
 def test_breaker_persists_across_instances(tmp_path) -> None:
-    breaker.LoginBreaker(tmp_path, "sw").record_failure({"err_type": 2})
+    breaker.LoginBreaker(tmp_path, "sw").reserve_attempt().release(
+        Outcome.FAILURE, failure={"err_type": 2}
+    )
     reopened = breaker.LoginBreaker(tmp_path, "sw")
-    assert reopened.is_open is True
-    assert reopened.state().details["err_type"] == 2
+    assert reopened.status()["state"] == "open"
+    assert reopened.status()["last_failure"]["err_type"] == 2
+    with pytest.raises(BreakerOpen):
+        reopened.reserve_attempt()
 
 
 def test_breaker_file_is_private(tmp_path) -> None:
@@ -144,7 +152,7 @@ def test_breaker_file_is_private(tmp_path) -> None:
     import sys
 
     b = breaker.LoginBreaker(tmp_path, "sw")
-    b.record_failure({"err_type": 1})
+    b.reserve_attempt().release(Outcome.FAILURE)
     if sys.platform != "win32":
         assert (os.stat(b.path).st_mode & 0o777) == 0o600
 
@@ -153,32 +161,34 @@ def test_breaker_fails_closed_on_corrupt_file(tmp_path) -> None:
     b = breaker.LoginBreaker(tmp_path, "sw")
     b.path.parent.mkdir(parents=True, exist_ok=True)
     b.path.write_text("{ this is not json", encoding="utf-8")
-    assert b.is_open is True
-    assert b.state().corrupt is True
-    with pytest.raises(LockoutGuard):
-        b.check()
+    assert b.status()["state"] == "open"
+    with pytest.raises(BreakerOpen):
+        b.reserve_attempt()
 
 
 def test_breaker_fails_closed_on_malformed_json(tmp_path) -> None:
     b = breaker.LoginBreaker(tmp_path, "sw")
     b.path.parent.mkdir(parents=True, exist_ok=True)
-    b.path.write_text('{"open": "yes"}', encoding="utf-8")
-    assert b.state().corrupt is True
-    assert b.is_open is True
+    b.path.write_text('{"open": "yes"}', encoding="utf-8")  # unknown shape; extra forbidden
+    assert b.status()["state"] == "open"
+    with pytest.raises(BreakerOpen):
+        b.reserve_attempt()
 
 
-def test_breaker_snapshot_is_json_safe(tmp_path) -> None:
+def test_breaker_status_is_json_safe(tmp_path) -> None:
     import json
 
     b = breaker.LoginBreaker(tmp_path, "sw")
-    b.record_failure({"err_type": 1, "obj": object()})
-    snap = b.state().snapshot()
+    b.reserve_attempt().release(Outcome.FAILURE, failure={"err_type": 1})
+    snap = b.status()
     json.dumps(snap)  # does not raise
-    assert snap["open"] is True
+    assert snap["state"] == "open"
+    assert snap["last_failure"] == {"err_type": 1}
 
 
-def test_login_disabled_is_enforced_by_settings_not_breaker() -> None:
-    # LOGIN_DISABLED remains a settings flag; the authenticator checks it before I/O.
+def test_login_disabled_is_owned_by_the_breaker() -> None:
+    # LOGIN_DISABLED remains a settings flag; it is now passed into the breaker, which
+    # refuses at reserve_attempt() before any store I/O.
     assert _settings(LOGIN_DISABLED="true").login_disabled is True
 
 
@@ -190,7 +200,7 @@ async def test_run_tool_maps_errors_and_redacts() -> None:
         return {"token": "s", "ok": 1}
 
     async def bad_input():
-        raise ValueError("nope")
+        raise InvalidInput("nope")
 
     async def boom():
         raise RuntimeError("internal detail")

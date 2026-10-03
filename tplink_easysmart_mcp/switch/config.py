@@ -245,7 +245,11 @@ def load_switch_settings(environ: dict[str, str]) -> SwitchSettings:
             raise ConfigError(
                 f"{ENV_PREFIX}{suffix} is not applicable: the switch is HTTP-only. Remove it."
             )
-    reject_unknown_env(ENV_PREFIX, environ, SWITCH_ENV_SUFFIXES, ignore_subprefixes=("MCP_",))
+    # The server settings share this device's prefix (``EASYSMART_MCP_*``) and are
+    # validated by ``load_global_settings``, so drop them before the device-level
+    # unknown-key check (the canonical ``reject_unknown_env`` has no subprefix escape).
+    device_environ = {k: v for k, v in environ.items() if not k.startswith(ENV_PREFIX + "MCP_")}
+    reject_unknown_env(ENV_PREFIX, SWITCH_ENV_SUFFIXES, device_environ)
     raw: dict[str, object] = {
         field: environ[ENV_PREFIX + suffix]
         for suffix, field in SWITCH_ENV_SUFFIXES.items()

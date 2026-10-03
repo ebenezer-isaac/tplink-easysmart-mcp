@@ -43,7 +43,7 @@ async def test_status_probe_makes_one_get_and_no_post(tmp_path) -> None:
     assert fake.count("POST", LOGON) == 0
     assert data["reachable"] is True
     assert data["session_model"] == "ip_bound"
-    assert data["breaker"]["open"] is False
+    assert data["breaker"]["state"] == "closed"
 
 
 async def test_status_reports_unreachable_without_raising(tmp_path) -> None:

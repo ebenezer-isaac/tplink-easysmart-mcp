@@ -18,9 +18,8 @@ from collections.abc import Mapping, Sequence
 
 from dotenv import load_dotenv
 
-from .core.cli import configure_logging, emit_envelope, emit_lines
+from .core.cli import configure_logging, emit_envelope, emit_lines, run_breaker
 from .core.config import load_global_settings
-from .core.envelope import ok
 from .core.errors import ConfigError
 from .core.tooling import run_tool
 from .server import MCP_ENV_PREFIX, build_server
@@ -103,12 +102,7 @@ def _check_auth(environ: Mapping[str, str], *, login: bool) -> int:
 def _breaker(environ: Mapping[str, str], *, clear: bool) -> int:
     device = load_switch_settings(dict(environ))
     backend = EasySmartSwitchBackend(device)
-    if clear:
-        backend.breaker.clear()
-        return emit_envelope(
-            ok({"breaker": "cleared", "state": backend.breaker.state().snapshot()})
-        )
-    return emit_envelope(ok({"breaker": backend.breaker.state().snapshot()}))
+    return run_breaker(backend.breaker, "clear" if clear else "show")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

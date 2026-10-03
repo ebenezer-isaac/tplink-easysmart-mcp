@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from tplink_easysmart_mcp.core.tooling import run_tool
-from tplink_easysmart_mcp.switch.cycle import CycleMarker, poe_cycle_op
+from tplink_easysmart_mcp.switch.cycle import poe_cycle_op
 
 from .switch_fakes import FakeClock, StatefulSwitch, write_backend
 
@@ -89,15 +89,16 @@ async def test_concurrent_cycle_is_refused_with_no_requests(tmp_path) -> None:
     assert switch.calls == []
 
 
-async def test_fresh_marker_refuses_stale_marker_allows(tmp_path) -> None:
+async def test_fresh_reservation_refuses_stale_reservation_allows(tmp_path) -> None:
     switch = StatefulSwitch()
     backend, clock = write_backend(tmp_path, switch)
-    marker = CycleMarker(backend.settings.state_path, backend.settings.host, now=clock.now)
-    # A fresh marker (just written) blocks a new cycle.
-    marker.begin(1, "cam1")
+    # A fresh, unreleased reservation (another in-flight or crashed cycle on this port)
+    # blocks a new cycle. The handle is dropped and never released, as a crash would.
+    backend.cycle_guard.reserve(1, "cam1")
     blocked = await cyc(backend, port_or_name=1, off_seconds=10)
     assert blocked["error"]["code"] == "CYCLE_IN_PROGRESS"
-    # Advance past the stale window: the marker is now ignored and the cycle runs.
+    # Advance past the clock-clamped 5-minute stale window: the reservation is now
+    # treated as stale and a new cycle may take it over.
     clock.t += 301
     env = await cyc(backend, port_or_name=1, off_seconds=10)
     assert env["success"] is True
@@ -159,7 +160,7 @@ async def test_breaker_trip_on_relogin_is_incomplete_no_further_login(tmp_path) 
     assert env["error"]["code"] == "CYCLE_INCOMPLETE"
     assert env["error"]["details"]["error"] == "AUTH_FAILED"
     assert switch.logins == 2  # initial + the failed re-login; the breaker blocks any more
-    assert backend.breaker.is_open is True
+    assert backend.breaker.status()["state"] == "open"
 
 
 # ---- power never returns -----------------------------------------------------

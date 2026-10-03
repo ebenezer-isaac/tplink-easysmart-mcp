@@ -107,9 +107,9 @@ def _clean_env(monkeypatch, tmp_path) -> None:
 def test_cli_breaker_show_and_clear(monkeypatch, tmp_path, capsys) -> None:
     _clean_env(monkeypatch, tmp_path)
     assert cli.main(["breaker", "--show"]) == 0
-    assert '"open": false' in capsys.readouterr().out
+    assert '"state": "closed"' in capsys.readouterr().out
     assert cli.main(["breaker", "--clear"]) == 0
-    assert '"cleared"' in capsys.readouterr().out
+    assert "cleared" in capsys.readouterr().out.lower()
 
 
 def test_cli_check_auth_uses_backend(monkeypatch, tmp_path, capsys) -> None:

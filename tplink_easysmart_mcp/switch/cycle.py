@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from ..core.errors import DeviceError, TransportError
+from ..core.state import Outcome
 from .config import MAX_PORT, SwitchSettings
 from .errors import (
     AlreadyOff,
@@ -49,7 +50,6 @@ from .errors import (
     WriteVerifyFailed,
 )
 from .forms import RequestPlan, build_poe_port_form, plan_redacted
-from .marker import CycleMarker
 from .models import PoePort, PoeStatus
 from .tools_read import poe_view, resolve_port
 from .tools_write import refuse_non_poe_config, refuse_non_poe_live, refuse_protected
@@ -61,8 +61,7 @@ log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 2
 
-# Re-exported so ``backend`` / the breaker tests keep importing it from ``cycle``.
-__all__ = ["CycleMarker", "PoeCycleInput", "poe_cycle_op"]
+__all__ = ["PoeCycleInput", "poe_cycle_op"]
 
 
 class PoeCycleInput(BaseModel):
@@ -99,11 +98,13 @@ async def poe_cycle_op(
     if backend.cycle_lock.locked():
         raise CycleInProgress("another power-cycle is already running on this switch")
     async with backend.cycle_lock:
-        backend.cycle_marker.begin(resolved.port, resolved.name)
+        # Cross-process, crash-visible, per-port reservation (raises CYCLE_IN_PROGRESS
+        # if another process holds a fresh reservation for this port).
+        reservation = backend.cycle_guard.reserve(resolved.port, resolved.name)
         try:
             return await _run_cycle(backend, resolved.port, resolved.name, off)
         finally:
-            backend.cycle_marker.end()
+            reservation.release(Outcome.SUCCESS)
 
 
 async def _run_cycle(

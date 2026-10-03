@@ -1,41 +1,31 @@
-"""Top-level worker for the multiprocessing marker-race test (spawn-safe).
+"""Top-level worker for the multiprocessing cycle-reservation test (spawn-safe).
 
 Must live in its own importable module so a ``spawn`` child can import the target
-by name on Windows. Each worker claims the *same* switch's cycle marker through
-the real :class:`CycleMarker.begin` and records whether it was allowed to proceed.
+by name on Windows. Each worker claims the *same* switch port's cycle reservation
+through the real :class:`CycleGuard.reserve` (a thin policy over the canonical
+``ReservationStore``) and records whether it was allowed to proceed.
 
-``SlowMarker`` overrides only ``_write`` to add latency; the claim-under-test
-(``begin`` is atomic / serialised across processes) lives entirely in the
-inherited ``begin``/``_read``/``_write`` sequence. The latency does not add or
-remove any lock — it only widens the existing read-then-write window so the race
-is deterministic. If any cross-process mutual exclusion existed, exactly one
-worker would win regardless of write latency.
+Post X1b, the reservation takes the per-key cross-process advisory lock and writes
+``reserved=1`` under it before returning, so exactly one worker may claim a given
+port; the rest see ``CycleInProgress``. The winner holds the reservation (never
+releases, as a running cycle would) by simply exiting with it unresolved.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 from pathlib import Path
 
 # The editable install puts tplink_easysmart_mcp on sys.path; keep the child robust.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from tplink_easysmart_mcp.switch.cycle import CycleMarker
+from tplink_easysmart_mcp.switch.cycle_guard import CycleGuard
 from tplink_easysmart_mcp.switch.errors import CycleInProgress
 
 
-class SlowMarker(CycleMarker):
-    """Real ``begin`` logic; only the write step is slowed to expose the race."""
-
-    def _write(self, payload: dict) -> None:  # type: ignore[override]
-        time.sleep(0.4)
-        super()._write(payload)
-
-
 def run(state_dir: str, device: str, idx: int, barrier, started: float) -> None:
-    marker = SlowMarker(state_dir, device, now=lambda: started)
+    guard = CycleGuard(state_dir, device, now=lambda: started)
     result_path = Path(state_dir) / f"result-{idx}.txt"
     try:
         barrier.wait(timeout=30)
@@ -43,8 +33,8 @@ def run(state_dir: str, device: str, idx: int, barrier, started: float) -> None:
         result_path.write_text("BARRIER_TIMEOUT", encoding="utf-8")
         return
     try:
-        marker.begin(port=1, name="cam1")
-        outcome = "OK"  # this worker believes it may run the cycle
+        guard.reserve(port=1, name="cam1")  # held, never released (as a live cycle would)
+        outcome = "OK"  # this worker claimed the port
     except CycleInProgress:
         outcome = "BLOCKED"
     except Exception as exc:  # pragma: no cover - surface any unexpected failure
