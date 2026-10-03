@@ -13,12 +13,18 @@ requires-python = ">=3.11"
 authors = [{ name = "Ebenezer Isaac" }]
 keywords = ["mcp", "tp-link", "easy-smart", "switch", "poe", "tl-sg1016pe"]
 classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: System Administrators",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
   "Topic :: System :: Networking",
+  "Topic :: System :: Networking :: Monitoring",
+  "Topic :: Home Automation",
 ]
 dependencies = [
   # FastMCP lives at mcp.server.fastmcp in the 1.x line; 2.x renamed it.
@@ -27,6 +33,12 @@ dependencies = [
   "pydantic>=2.6,<3",
   "python-dotenv>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ebenezer-isaac/tplink-easysmart-mcp"
+Repository = "https://github.com/ebenezer-isaac/tplink-easysmart-mcp"
+Issues = "https://github.com/ebenezer-isaac/tplink-easysmart-mcp/issues"
+Changelog = "https://github.com/ebenezer-isaac/tplink-easysmart-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
