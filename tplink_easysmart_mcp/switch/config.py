@@ -211,6 +211,7 @@ class SwitchSettings(DeviceSettings):
             "poe_ports": list(self.poe_ports),
             "protected_ports": list(self.protected_ports),
             "port_map_names": [name for name, _ in self.port_map],
+            "port_map": dict(self.port_map),
             "login_cooldown_s": self.login_cooldown_s,
         }
 

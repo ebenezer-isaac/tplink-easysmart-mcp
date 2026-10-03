@@ -13,8 +13,10 @@ three S2 operations:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -25,8 +27,11 @@ from ..core.errors import TransportError
 from .auth import LoginCooldown
 from .client import SwitchClient
 from .config import SwitchSettings, poe_ports_mismatch
+from .cycle import CycleMarker
 
 log = logging.getLogger(__name__)
+
+Sleep = Callable[[float], Awaitable[None]]
 
 
 class EasySmartSwitchBackend:
@@ -38,9 +43,12 @@ class EasySmartSwitchBackend:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         now: Clock = time.time,
+        sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._settings = settings
         self._transport = transport
+        self._now = now
+        self._sleep = sleep
         self._breaker = LoginBreaker(
             settings.state_path,
             settings.host,
@@ -49,8 +57,26 @@ class EasySmartSwitchBackend:
         self._cooldown = LoginCooldown(
             settings.state_path, settings.host, settings.login_cooldown_s, now=now
         )
+        self._cycle_marker = CycleMarker(settings.state_path, settings.host, now=now)
+        self._cycle_lock = asyncio.Lock()
         self._client: SwitchClient | None = None
         self._poe_warning: str | None = None
+
+    @property
+    def now(self) -> Clock:
+        return self._now
+
+    @property
+    def sleep(self) -> Sleep:
+        return self._sleep
+
+    @property
+    def cycle_lock(self) -> asyncio.Lock:
+        return self._cycle_lock
+
+    @property
+    def cycle_marker(self) -> CycleMarker:
+        return self._cycle_marker
 
     @property
     def settings(self) -> SwitchSettings:
@@ -90,6 +116,7 @@ class EasySmartSwitchBackend:
             "config": self._settings.summary(),
             "breaker": self._breaker.state().snapshot(),
             "cooldown": self._cooldown.snapshot(),
+            "cycle": self._cycle_marker.snapshot(),
             "poe_port_num_mismatch": self._poe_warning,
         }
         try:

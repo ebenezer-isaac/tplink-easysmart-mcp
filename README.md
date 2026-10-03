@@ -5,10 +5,8 @@ A local, browser-free [MCP](https://modelcontextprotocol.io) server for the
 lockout-aware: it never retries a failed login, gates every write behind two
 keys, and refuses to act in the switch's factory-reset mode.
 
-> **Status:** early build. Phase S1 ships the pure page parsers, form builders
-> and login-page classifier plus the `switch_status` healthcheck. The
-> authenticated client, typed read tools and PoE power-cycle tool land in the
-> following phases.
+> **Status:** the authenticated client, the typed read tools and the write /
+> PoE power-cycle tools are in. Live on-device verification (phase S4) is pending.
 
 ## Why
 
@@ -32,6 +30,66 @@ camera without anyone opening the switch's web UI.
   admin password; the server refuses to POST and trips the breaker.
 - **Protected ports.** `EASYSMART_PROTECTED_PORTS` (required when writes are on)
   blocks changes to the uplink and the server's own port.
+
+## Tools
+
+All tools return the `{success, data, error}` envelope and never raise. A port
+argument is an `int` **or** a case-insensitive `EASYSMART_PORT_MAP` name
+(`switch_resolve_port` previews the mapping).
+
+| Tool | Mutates | What it does / refuses |
+|---|---|---|
+| `switch_status` | no | Healthcheck: config summary (writes, dry-run, PoE/protected ports, port map), one credential-free reachability probe, breaker/cooldown/cycle-marker state. Never logs in. |
+| `switch_check_auth` | no | Probe only (one GET): session model, auth variant, login mode. |
+| `switch_login` | no | Exactly one login, confirm, then logout. Returns hw/fw; never cookies. |
+| `switch_logout` | no | End any lingering session (no-op if not logged in). |
+| `switch_get_system_info` | no | Model, hw revision, firmware, MAC, IP, netmask, gateway, session model. |
+| `switch_get_ports` | no | Per-port state, link, speed, flow control, LAG, name, protected. `only_linked` filters. |
+| `switch_get_port_stats` | no | tx/rx good/bad counters for one port or all, plus `error_ports`. |
+| `switch_get_poe` | no | Budget totals + per-port state/priority/limit/class/W/mA/V/status, plus `fault_ports` and `unpowered_enabled_ports`. |
+| `switch_get_vlans` | no | 802.1Q table + per-port PVIDs, or `NOT_SUPPORTED` on firmware without it. |
+| `switch_resolve_port` | no | Resolve a name/number to `{port, name, is_poe, protected, max_port}`. |
+| `switch_set_poe` | **yes** | Enable/disable PoE on one port (read-modify-write; verifies priority/limit survive). Refuses `NOT_POE_PORT`, `PROTECTED_PORT`. |
+| `switch_set_port` | **yes** | Enable/disable one port's link (RMW; verifies speed/flow-control survive). Refuses `PROTECTED_PORT`. |
+| `switch_poe_cycle` | **yes** | Power-cycle a PoE camera: off → wait `off_seconds` → on → wait for power. Refuses `NOT_POE_PORT`, `PROTECTED_PORT`, `ALREADY_OFF`, `CYCLE_IN_PROGRESS`; reports `CYCLE_INCOMPLETE`/`POWER_NOT_RESTORED` naming any port left UNPOWERED. |
+
+### Write gating
+
+Every mutating tool needs **two keys**: `EASYSMART_ALLOW_WRITES=true` on the
+server **and** `confirm_write=true` on the call. Miss either and the tool returns
+a refusal **before any network call**. `EASYSMART_DRY_RUN=true` makes a write read
+the live page and return the exact form it *would* send, sending nothing. Every
+write (and every power-cycle) logs out afterwards, on success and on failure.
+
+### Protected ports (required for writes)
+
+`EASYSMART_PROTECTED_PORTS` must be set and non-empty whenever writes are enabled
+(startup fails otherwise). List the uplink and the server's own port; no write or
+power-cycle will touch them.
+
+### Power-cycle safety
+
+Only one cycle runs at a time: an in-process lock refuses a concurrent call, and a
+state-file marker under `EASYSMART_STATE_DIR` makes a crashed cycle visible (a
+marker younger than 5 minutes refuses a new cycle; an older one is reported stale
+and overwritten). Once the port is off, every failure path still attempts to turn
+it back on and reports both outcomes.
+
+### Restored-account guard
+
+In factory-reset mode the login form becomes "New Password / Confirm" and a POST
+would *set* the admin password. The server refuses to POST and trips the breaker.
+
+### Session eviction
+
+The switch is effectively single-session: **the switch web UI is logged out
+whenever the MCP acts, and vice versa.** Reads log in lazily and re-log in at most
+once per call; writes log out when done.
+
+### Deployment
+
+Cleartext login crosses the LAN, so run this only on the wired-LAN host that
+reaches the switch, bound to loopback and reached over Tailscale/SSH.
 
 ## Configuration
 
