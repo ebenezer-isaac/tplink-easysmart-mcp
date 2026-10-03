@@ -27,7 +27,7 @@ from .constants import (
     PRESET_LIMIT_READ,
 )
 from .errors import ProtocolError, SessionExpired
-from .jsvars import extract_vars
+from .jsvars import declared_count, extract_vars
 from .models import (
     PageClass,
     PoeBudget,
@@ -84,7 +84,7 @@ def parse_system_info(html: str) -> SystemInfo:
 
 def parse_ports(html: str) -> tuple[PortState, ...]:
     data = _require_data(html, ANCHOR_PORTS)
-    count = _req_int(data, "max_port_num")
+    count = declared_count(data, "max_port_num")
     info = _req_obj(data, "all_info")
     state = _int_array(info.get("state"), "all_info.state", count)
     trunk = _int_array(info.get("trunk_info"), "all_info.trunk_info", count)
@@ -110,7 +110,7 @@ def parse_ports(html: str) -> tuple[PortState, ...]:
 
 def parse_port_stats(html: str) -> tuple[PortStats, ...]:
     data = _require_data(html, ANCHOR_PORT_STATS)
-    count = _req_int(data, "max_port_num")
+    count = declared_count(data, "max_port_num")
     info = _req_obj(data, "all_info")
     state = _int_array(info.get("state"), "all_info.state", count)
     link = _int_array(info.get("link_status"), "all_info.link_status", count)
@@ -134,7 +134,7 @@ def parse_port_stats(html: str) -> tuple[PortStats, ...]:
 
 def parse_poe(html: str) -> PoeSnapshot:
     data = _require_data(html, ANCHOR_POE)
-    count = _req_int(data, "poe_port_num")
+    count = declared_count(data, "poe_port_num")
     cfg = _req_obj(data, "portConfig")
     state = _int_array(cfg.get("state"), "portConfig.state", count)
     priority = _int_array(cfg.get("priority"), "portConfig.priority", count)
@@ -215,7 +215,7 @@ def _limit_from_raw(raw: int) -> tuple[PoeLimitKind, float | None]:
 def parse_vlans(html: str) -> VlanTable:
     data = _require_data(html, ANCHOR_VLAN)
     ds = _req_obj(data, "qvlan_ds")
-    port_count = _req_int(ds, "portNum")
+    port_count = declared_count(ds, "portNum")
     count = _req_int(ds, "count")
     vids = _list_at_least(ds.get("vids"), "qvlan_ds.vids", count)
     names = _list_at_least(ds.get("names"), "qvlan_ds.names", count)
@@ -241,7 +241,7 @@ def parse_vlans(html: str) -> VlanTable:
 def parse_pvids(html: str) -> PvidTable:
     data = _require_data(html, ANCHOR_PVID)
     ds = _req_obj(data, "pvid_ds")
-    port_count = _req_int(ds, "portNum")
+    port_count = declared_count(ds, "portNum")
     count = _req_int(ds, "count")
     vids = _list_at_least(ds.get("vids"), "pvid_ds.vids", count)
     mbrs = _int_array(ds.get("mbrs"), "pvid_ds.mbrs", count)

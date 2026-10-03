@@ -51,15 +51,18 @@ def test_absurd_portnum_is_rejected() -> None:
 
 
 def test_portnum_work_is_bounded_in_time() -> None:
-    """Parsing a crafted VLAN page must not scale with the declared port count.
+    """A crafted portNum must be rejected fast, not parsed in O(portNum) time.
 
-    portNum=1_000_000 measures ~5 s here (and 5_000_000 ~108 s); a correct parser
-    is sub-second regardless of `portNum`. The assertion fails today, demonstrating
-    the DoS. The cost is super-linear because `1 << (p - 1)` builds a bignum whose
-    size grows with the declared port count.
+    Orchestrator fix decision (F2): the hardened parser caps every declared port
+    count at MAX_DECLARED_PORTS and raises ProtocolError *before* any per-port
+    work, so an absurd portNum costs constant time instead of the old O(portNum)
+    bignum loop (`1 << (p - 1)`), which measured ~5 s at 1e6 and ~108 s at 5e6.
+    The timing bound is asserted generously (the raise is immediate — well under
+    the 50 ms target) to stay deterministic on a loaded CI host.
     """
-    html = _with_portnum(load("vlan_8021q.html"), 1_000_000)
+    html = _with_portnum(load("vlan_8021q.html"), 5_000_000)
     start = time.perf_counter()
-    parsers.parse_vlans(html)
+    with pytest.raises(ProtocolError):
+        parsers.parse_vlans(html)
     elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"parse_vlans took {elapsed:.1f}s for a crafted portNum (DoS)"
+    assert elapsed < 1.0, f"parse_vlans took {elapsed:.3f}s to reject a crafted portNum"

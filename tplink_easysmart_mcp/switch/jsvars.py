@@ -17,7 +17,13 @@ from __future__ import annotations
 import json
 import re
 
-from .constants import MAX_ARRAY_ITEMS, MAX_DEPTH, MAX_IDENT_LEN, MAX_INPUT_BYTES
+from .constants import (
+    MAX_ARRAY_ITEMS,
+    MAX_DECLARED_PORTS,
+    MAX_DEPTH,
+    MAX_IDENT_LEN,
+    MAX_INPUT_BYTES,
+)
 from .errors import ProtocolError
 
 JsValue = None | bool | int | float | str | list["JsValue"] | dict[str, "JsValue"]
@@ -43,6 +49,26 @@ def extract_vars(html: str) -> dict[str, JsValue]:
     if inner is None:
         return {}
     return _parse_script(inner)
+
+
+def declared_count(data: dict[str, JsValue], key: str) -> int:
+    """Read a page-declared length/count and cap it at ``MAX_DECLARED_PORTS``.
+
+    Every per-port/per-entry count a parser reads to size a loop (``portNum``,
+    ``max_port_num``, ``poe_port_num``, any ``*_num``) must go through here. A
+    scalar count escapes the array-size cap that already guards declared arrays,
+    so without this a hostile page could set ``portNum = 5_000_000`` and drive an
+    O(n) parser loop into a CPU DoS. Raises ``ProtocolError`` if the value is
+    missing, not an int, negative, or above the cap — before any loop runs.
+    """
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProtocolError(f"{key} is missing or not an integer")
+    if value < 0:
+        raise ProtocolError(f"{key}={value} is negative")
+    if value > MAX_DECLARED_PORTS:
+        raise ProtocolError(f"{key}={value} exceeds MAX_DECLARED_PORTS={MAX_DECLARED_PORTS}")
+    return value
 
 
 def _first_script(html: str) -> str | None:

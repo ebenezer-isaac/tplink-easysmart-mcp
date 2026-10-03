@@ -90,6 +90,12 @@ body there. (Enforcement in the auth/client flow is added in S2.)
   long; `pkts` is `tx_good, tx_bad, rx_good, rx_bad` per port plus 2 pad slots.
   Parsers use the first `max_port_num` entries and raise `ProtocolError` if fewer
   are present.
+- Every declared port/entry count (`portNum`, `max_port_num`, `poe_port_num`)
+  is read through `jsvars.declared_count`, which caps it at `MAX_DECLARED_PORTS`
+  (128) and raises `ProtocolError` for a missing/negative/over-cap value. A scalar
+  count otherwise escapes the 4,096-item array cap and could drive an O(n) parser
+  loop into a CPU DoS — e.g. a crafted `portNum = 5_000_000` on the VLAN page
+  (breaker r1 F2).
 
 ## Write forms (`forms.py`)
 
