@@ -111,41 +111,75 @@ def test_write_gate_passes_with_both_keys() -> None:
     assert check_write_gate(_settings(ALLOW_WRITES="true"), "delete", True) is None
 
 
-# ---- lockout helpers ------------------------------------------------------------
+# ---- file-backed login breaker --------------------------------------------------
 
 
-def test_ledger_is_immutable_and_rebuilt() -> None:
-    ledger = breaker.LoginLedger()
-    after = breaker.record_failure(ledger, {"x": 1})
-    assert (ledger.failed, after.failed) == (0, 1)
-    assert breaker.record_success(after).successful == 1
+def test_breaker_starts_closed_and_check_passes(tmp_path) -> None:
+    b = breaker.LoginBreaker(tmp_path, "192.0.2.10")
+    assert b.is_open is False
+    b.check()  # does not raise
+    assert not b.path.exists()
 
 
-def test_login_disabled_guard_names_variable() -> None:
-    with pytest.raises(LockoutGuard, match="EASYSMART_LOGIN_DISABLED"):
-        breaker.check_login_allowed(
-            breaker.LoginLedger(), _settings(LOGIN_DISABLED="true"), explicit=True
-        )
+def test_breaker_trips_and_blocks_then_clears(tmp_path) -> None:
+    b = breaker.LoginBreaker(tmp_path, "192.0.2.10")
+    b.record_failure({"code": "AUTH_FAILED", "err_type": 1})
+    assert b.is_open is True
+    with pytest.raises(LockoutGuard):
+        b.check()
+    b.clear()
+    assert b.is_open is False
+    b.check()
 
 
-@pytest.mark.parametrize(
-    ("remaining", "explicit", "refused"),
-    [
-        (None, False, False),
-        (0, True, True),
-        (-1, True, True),
-        (1, True, False),
-        (1, False, True),
-        (2, False, True),
-        (3, False, False),
-    ],
-)
-def test_remaining_attempt_guard(remaining, explicit, refused) -> None:
-    if refused:
-        with pytest.raises(LockoutGuard):
-            breaker.check_remaining_attempts(remaining, explicit=explicit)
-    else:
-        breaker.check_remaining_attempts(remaining, explicit=explicit)
+def test_breaker_persists_across_instances(tmp_path) -> None:
+    breaker.LoginBreaker(tmp_path, "sw").record_failure({"err_type": 2})
+    reopened = breaker.LoginBreaker(tmp_path, "sw")
+    assert reopened.is_open is True
+    assert reopened.state().details["err_type"] == 2
+
+
+def test_breaker_file_is_private(tmp_path) -> None:
+    import os
+    import sys
+
+    b = breaker.LoginBreaker(tmp_path, "sw")
+    b.record_failure({"err_type": 1})
+    if sys.platform != "win32":
+        assert (os.stat(b.path).st_mode & 0o777) == 0o600
+
+
+def test_breaker_fails_closed_on_corrupt_file(tmp_path) -> None:
+    b = breaker.LoginBreaker(tmp_path, "sw")
+    b.path.parent.mkdir(parents=True, exist_ok=True)
+    b.path.write_text("{ this is not json", encoding="utf-8")
+    assert b.is_open is True
+    assert b.state().corrupt is True
+    with pytest.raises(LockoutGuard):
+        b.check()
+
+
+def test_breaker_fails_closed_on_malformed_json(tmp_path) -> None:
+    b = breaker.LoginBreaker(tmp_path, "sw")
+    b.path.parent.mkdir(parents=True, exist_ok=True)
+    b.path.write_text('{"open": "yes"}', encoding="utf-8")
+    assert b.state().corrupt is True
+    assert b.is_open is True
+
+
+def test_breaker_snapshot_is_json_safe(tmp_path) -> None:
+    import json
+
+    b = breaker.LoginBreaker(tmp_path, "sw")
+    b.record_failure({"err_type": 1, "obj": object()})
+    snap = b.state().snapshot()
+    json.dumps(snap)  # does not raise
+    assert snap["open"] is True
+
+
+def test_login_disabled_is_enforced_by_settings_not_breaker() -> None:
+    # LOGIN_DISABLED remains a settings flag; the authenticator checks it before I/O.
+    assert _settings(LOGIN_DISABLED="true").login_disabled is True
 
 
 # ---- run_tool -----------------------------------------------------------------
@@ -153,7 +187,7 @@ def test_remaining_attempt_guard(remaining, explicit, refused) -> None:
 
 async def test_run_tool_maps_errors_and_redacts() -> None:
     async def leaky():
-        return {"stok": "s", "ok": 1}
+        return {"token": "s", "ok": 1}
 
     async def bad_input():
         raise ValueError("nope")
@@ -161,7 +195,7 @@ async def test_run_tool_maps_errors_and_redacts() -> None:
     async def boom():
         raise RuntimeError("internal detail")
 
-    assert (await run_tool("t", leaky))["data"] == {"stok": "<redacted>", "ok": 1}
+    assert (await run_tool("t", leaky))["data"] == {"token": "<redacted>", "ok": 1}
     assert (await run_tool("t", bad_input))["error"]["code"] == "INVALID_INPUT"
     internal = await run_tool("t", boom)
     assert internal["error"]["code"] == "INTERNAL_ERROR"

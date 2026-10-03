@@ -11,7 +11,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -153,9 +153,40 @@ def host_is_set(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
     return bool(source.get(f"{prefix}HOST", "").strip())
 
 
+def reject_unknown_env(
+    prefix: str,
+    source: Mapping[str, str],
+    known_suffixes: Iterable[str],
+    *,
+    ignore_subprefixes: tuple[str, ...] = (),
+) -> None:
+    """Raise ``ConfigError`` listing any ``<prefix>*`` variable that is not recognised.
+
+    A typo such as a singular ``<PREFIX>PROTECTED_PORT`` used to be dropped
+    silently, so the setting never took effect and writes ran unguarded. Keys
+    under an ``ignore_subprefixes`` namespace (e.g. the ``MCP_`` server settings)
+    are not this device's business and are passed over.
+    """
+    known = set(known_suffixes)
+    unknown = sorted(
+        key
+        for key in source
+        if key.startswith(prefix)
+        and key[len(prefix) :] not in known
+        and not any(key.startswith(prefix + sub) for sub in ignore_subprefixes)
+    )
+    if unknown:
+        raise ConfigError(
+            "Unknown configuration variable(s): "
+            + ", ".join(unknown)
+            + ". Check for typos; this build does not accept them."
+        )
+
+
 def load_device_settings(prefix: str, environ: Mapping[str, str] | None = None) -> DeviceSettings:
     """Build DeviceSettings from ``<prefix>*`` variables. Fails fast."""
     source = os.environ if environ is None else environ
+    reject_unknown_env(prefix, source, DEVICE_ENV_SUFFIXES, ignore_subprefixes=("MCP_",))
     raw: dict[str, object] = {
         field: source[prefix + suffix]
         for suffix, field in DEVICE_ENV_SUFFIXES.items()

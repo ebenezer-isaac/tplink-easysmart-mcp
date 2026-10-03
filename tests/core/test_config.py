@@ -8,6 +8,7 @@ from tplink_easysmart_mcp.core.config import (
     host_is_set,
     load_device_settings,
     load_global_settings,
+    reject_unknown_env,
 )
 from tplink_easysmart_mcp.core.errors import ConfigError
 
@@ -42,6 +43,29 @@ def test_prefixes_are_isolated() -> None:
     b = load_device_settings("OTHER_DEV_", environ)
     assert (a.host, a.port) == (DOC_HOST, 443)
     assert (b.host, b.port) == ("192.0.2.1", 8443)
+
+
+def test_unknown_env_var_is_rejected_not_dropped() -> None:
+    # A typo (singular) used to be silently ignored; now it fails loudly and is named.
+    with pytest.raises(ConfigError, match="EASYSMART_PROTECTED_PORT"):
+        load_device_settings(PREFIX, {**env(), f"{PREFIX}PROTECTED_PORT": "16"})
+
+
+def test_reject_unknown_env_ignores_subprefix() -> None:
+    # MCP_* server settings are not the device's business and are passed over.
+    reject_unknown_env(
+        PREFIX,
+        {f"{PREFIX}HOST": DOC_HOST, f"{PREFIX}MCP_PORT": "8765"},
+        {"HOST"},
+        ignore_subprefixes=("MCP_",),
+    )
+
+
+def test_reject_unknown_env_lists_every_offender() -> None:
+    with pytest.raises(ConfigError) as info:
+        reject_unknown_env(PREFIX, {f"{PREFIX}FOO": "1", f"{PREFIX}BAR": "2"}, {"HOST"})
+    message = str(info.value)
+    assert "EASYSMART_FOO" in message and "EASYSMART_BAR" in message
 
 
 def test_host_is_set() -> None:
