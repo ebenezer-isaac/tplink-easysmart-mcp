@@ -1,11 +1,12 @@
 """The single switch backend wired into the MCP server and CLI.
 
 Holds the one ``SwitchClient`` (created lazily so ``--list-tools`` never opens a
-socket), the persistent breaker and the persistent cooldown, and exposes the
-three S2 operations:
+socket) and the one persistent :class:`LoginBreaker` (which now owns the cooldown,
+folded from the old separate ``LoginCooldown`` file — X1b core sync), and exposes
+the three S2 operations:
 
 * ``healthcheck`` — the probe only (one credential-free GET, no login, no POST),
-  plus the config summary and breaker/cooldown state. Backs ``switch_status``.
+  plus the config summary and breaker/cycle state. Backs ``switch_status``.
 * ``check_auth`` — the probe only. Backs ``switch_check_auth`` and ``check-auth``.
 * ``login_once`` — exactly one login, confirm, then logout. Backs ``switch_login``
   and ``check-auth --login``. Returns the session model and hw/fw, never cookies.
@@ -22,15 +23,15 @@ from typing import Any
 import httpx
 
 from .. import __version__
-from ..core.breaker import Clock, LoginBreaker
+from ..core.breaker import LoginBreaker, canonical_device_key
 from ..core.errors import TransportError
-from .auth import LoginCooldown
 from .client import SwitchClient
 from .config import SwitchSettings, poe_ports_mismatch
-from .cycle import CycleMarker
+from .cycle_guard import CycleGuard
 
 log = logging.getLogger(__name__)
 
+Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
 
 
@@ -49,15 +50,16 @@ class EasySmartSwitchBackend:
         self._transport = transport
         self._now = now
         self._sleep = sleep
+        device_key = canonical_device_key(settings.host)
         self._breaker = LoginBreaker(
             settings.state_path,
-            settings.host,
-            clear_hint="run `tplink-easysmart-mcp breaker --clear` once the cause is fixed",
+            device_key,
+            max_failures=settings.max_login_failures,
+            clock=now,
+            login_disabled=settings.login_disabled,
+            disabled_hint=f"{settings.env_name('LOGIN_DISABLED')}=true freezes auth",
         )
-        self._cooldown = LoginCooldown(
-            settings.state_path, settings.host, settings.login_cooldown_s, now=now
-        )
-        self._cycle_marker = CycleMarker(settings.state_path, settings.host, now=now)
+        self._cycle_guard = CycleGuard(settings.state_path, device_key, now=now)
         self._cycle_lock = asyncio.Lock()
         self._client: SwitchClient | None = None
         self._poe_warning: str | None = None
@@ -75,8 +77,8 @@ class EasySmartSwitchBackend:
         return self._cycle_lock
 
     @property
-    def cycle_marker(self) -> CycleMarker:
-        return self._cycle_marker
+    def cycle_guard(self) -> CycleGuard:
+        return self._cycle_guard
 
     @property
     def settings(self) -> SwitchSettings:
@@ -87,15 +89,9 @@ class EasySmartSwitchBackend:
         return self._breaker
 
     @property
-    def cooldown(self) -> LoginCooldown:
-        return self._cooldown
-
-    @property
     def client(self) -> SwitchClient:
         if self._client is None:
-            self._client = SwitchClient(
-                self._settings, self._breaker, self._cooldown, transport=self._transport
-            )
+            self._client = SwitchClient(self._settings, self._breaker, transport=self._transport)
         return self._client
 
     async def aclose(self) -> None:
@@ -114,9 +110,8 @@ class EasySmartSwitchBackend:
         data: dict[str, Any] = {
             "version": __version__,
             "config": self._settings.summary(),
-            "breaker": self._breaker.state().snapshot(),
-            "cooldown": self._cooldown.snapshot(),
-            "cycle": self._cycle_marker.snapshot(),
+            "breaker": self._breaker.status(),
+            "cycle": self._cycle_guard.status(),
             "poe_port_num_mismatch": self._poe_warning,
         }
         try:
@@ -141,8 +136,7 @@ class EasySmartSwitchBackend:
             "auth_variant": probe.auth_variant.value,
             "login_mode": probe.login_mode.value,
             "err_type": probe.err_type,
-            "breaker": self._breaker.state().snapshot(),
-            "cooldown": self._cooldown.snapshot(),
+            "breaker": self._breaker.status(),
         }
 
     async def logout(self) -> dict[str, Any]:

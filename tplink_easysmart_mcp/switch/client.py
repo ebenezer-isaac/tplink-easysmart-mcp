@@ -28,7 +28,7 @@ import httpx
 from ..core.breaker import LoginBreaker
 from ..core.errors import TransportError
 from ..core.serial import SerialLock
-from .auth import ConnectionResetSignal, HttpResult, LoginCooldown, LoginResult, SwitchAuthenticator
+from .auth import ConnectionResetSignal, HttpResult, LoginResult, SwitchAuthenticator
 from .config import SwitchSettings
 from .constants import (
     ANCHOR_POE,
@@ -74,7 +74,6 @@ class SwitchClient:
         self,
         settings: SwitchSettings,
         breaker: LoginBreaker,
-        cooldown: LoginCooldown,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -87,7 +86,7 @@ class SwitchClient:
             transport=transport,
         )
         self._lock = SerialLock()
-        self._auth = SwitchAuthenticator(settings, self, breaker, cooldown)
+        self._auth = SwitchAuthenticator(settings, self, breaker)
 
     # -- transport surface used by the authenticator --------------------------
 
