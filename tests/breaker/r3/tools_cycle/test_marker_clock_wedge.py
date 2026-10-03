@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 
 from tests.switch_fakes import FakeClock, StatefulSwitch, write_backend
-from tplink_easysmart_mcp.core.breaker import canonical_device_key
 from tplink_easysmart_mcp.core.tooling import run_tool
 from tplink_easysmart_mcp.switch.cycle import poe_cycle_op
 
@@ -32,18 +31,21 @@ async def test_future_timestamp_reservation_does_not_wedge_every_cycle(tmp_path)
     clock = FakeClock(start=1000.0)
     backend, _ = write_backend(tmp_path, switch, clock=clock, port_map="cam1=1")
 
-    # A leftover reservation with a nonsensical future started_at (corrupt / NTP step).
-    path = backend.cycle_guard._store(1).path
+    # A leftover reservation with a nonsensical future reserved_at (corrupt / NTP step).
+    path = backend.cycle_guard.path(1)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "version": 1,
-                "key": canonical_device_key(backend.settings.host),
-                "reserved": 1,
-                "port": 1,
-                "name": "cam1",
-                "started_at": 10_000_000.0,
+                "key": path.stem,
+                "epoch": 0,
+                "reservations": {
+                    "stale-holder": {
+                        "reserved_at": 10_000_000.0,
+                        "meta": {"port": 1, "name": "cam1"},
+                    }
+                },
                 "last_update": 10_000_000.0,
             }
         ),
