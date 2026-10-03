@@ -1,0 +1,17 @@
+{
+  "description": "Local, browser-free MCP server for TP-Link Easy Smart PoE switches (TL-SG1016PE): read ports/stats/PoE and power-cycle cameras, read-first and write-gated.",
+  "topics": [
+    "mcp",
+    "model-context-protocol",
+    "tp-link",
+    "easy-smart",
+    "tl-sg1016pe",
+    "poe",
+    "network-switch",
+    "home-automation",
+    "home-assistant",
+    "python",
+    "cctv",
+    "llm-tools"
+  ]
+}

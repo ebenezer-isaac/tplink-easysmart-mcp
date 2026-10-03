@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a problem with tplink-easysmart-mcp
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste real passwords, IPs, MACs, or
+        cookie/session values** — redact them. Captured switch pages must be
+        sanitised (use `192.0.2.x` and `00:00:5E:00:53:xx`) before attaching.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        Called switch_poe_cycle("cam_hall", ...) and got ...
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Switch hardware and firmware
+      description: From `switch_get_system_info` / the web UI (model, hw revision, firmware).
+      placeholder: "TL-SG1016PE 3.0, firmware 1.0.x Build ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tplink-easysmart-mcp version
+      description: Release tag or commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: "Python 3.12 on Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: envelope
+    attributes:
+      label: Error envelope / logs
+      description: The `{success, data, error}` envelope and any relevant logs. Redact secrets.
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: The `EASYSMART_*` variables in play, with the password redacted.
+      render: shell
+    validations:
+      required: false
