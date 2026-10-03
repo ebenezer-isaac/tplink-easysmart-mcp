@@ -15,6 +15,8 @@ never clear itself.
 
 from __future__ import annotations
 
+import pytest
+
 from tests.switch_fakes import FakeClock, StatefulSwitch, write_backend
 from tplink_easysmart_mcp.core.tooling import run_tool
 from tplink_easysmart_mcp.switch.cycle import CycleMarker, poe_cycle_op
@@ -26,6 +28,10 @@ async def _cycle(backend, **kwargs) -> dict:
     return await run_tool("switch_poe_cycle", lambda: poe_cycle_op(backend, **kwargs))
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
+)
 async def test_future_timestamp_marker_wedges_every_cycle(tmp_path) -> None:
     switch = StatefulSwitch()
     clock = FakeClock(start=1000.0)
@@ -45,6 +51,10 @@ async def test_future_timestamp_marker_wedges_every_cycle(tmp_path) -> None:
     assert switch.count("POST", POE_CGI) == 2
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
+)
 async def test_backward_clock_jump_wedges_an_existing_marker(tmp_path) -> None:
     switch = StatefulSwitch()
     clock = FakeClock(start=5000.0)

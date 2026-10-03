@@ -57,8 +57,7 @@ async def test_cycle_with_string_3_acts_on_port_5_not_port_3(tmp_path) -> None:
     # CLAIMED INVARIANT: asking for "3" must act on port 3 (the literal), not silently on
     # whatever port a camera happens to be NAMED "3". FAILS today: it cycles port 5.
     cycled_ports = {
-        next(int(k[4:]) for k in b if k.startswith("sel_"))
-        for b in switch.poe_write_bodies()
+        next(int(k[4:]) for k in b if k.startswith("sel_")) for b in switch.poe_write_bodies()
     }
     assert cycled_ports == {3}, f"cycling '3' drove physical ports {cycled_ports}, not port 3"
     assert env["data"]["port"] == 3

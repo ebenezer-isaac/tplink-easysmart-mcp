@@ -24,10 +24,15 @@ from __future__ import annotations
 import multiprocessing as mp
 
 import mp_cycle_worker  # bare-name import; conftest puts this dir on sys.path
+import pytest
 
 WORKERS = 6
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="deferred to X1b ReservationStore; see FINDINGS TC-F3/TC-F4",
+)
 def test_two_processes_both_claim_the_same_marker(tmp_path) -> None:
     ctx = mp.get_context("spawn")
     state_dir = str(tmp_path)

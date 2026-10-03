@@ -47,9 +47,7 @@ async def test_cancellation_between_off_and_on_still_restores_power(tmp_path) ->
     # CLAIMED INVARIANT: after the port is off, EVERY failure path (incl. cancellation)
     # attempts to turn it back on. FAILS today: CancelledError escapes the restore guard.
     switch = StatefulSwitch()
-    backend, _ = write_backend(
-        tmp_path, switch, clock=CancelDuringOffWindow(), port_map="cam1=1"
-    )
+    backend, _ = write_backend(tmp_path, switch, clock=CancelDuringOffWindow(), port_map="cam1=1")
 
     # The tool should restore power before unwinding; today the cancel escapes instead.
     with contextlib.suppress(asyncio.CancelledError):
@@ -66,9 +64,7 @@ async def test_non_device_exception_between_off_and_on_still_restores_power(tmp_
     # CLAIMED INVARIANT: "on every failure path (exception, ...)" the port is driven on.
     # FAILS today: a non-DeviceError skips _run_cycle's `except DeviceError` restore.
     switch = StatefulSwitch()
-    backend, _ = write_backend(
-        tmp_path, switch, clock=BugDuringOffWindow(), port_map="cam1=1"
-    )
+    backend, _ = write_backend(tmp_path, switch, clock=BugDuringOffWindow(), port_map="cam1=1")
 
     env = await run_tool(
         "switch_poe_cycle", lambda: poe_cycle_op(backend, port_or_name="cam1", off_seconds=10)

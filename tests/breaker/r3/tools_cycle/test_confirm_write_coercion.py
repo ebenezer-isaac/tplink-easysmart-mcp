@@ -28,9 +28,7 @@ async def test_truthy_string_confirm_write_lets_the_write_through(tmp_path, trut
     backend, _ = write_backend(tmp_path, switch, port_map="cam1=1")
     mcp = build_mcp(backend)
 
-    env = await call(
-        mcp, "switch_set_poe", {"port": 1, "enabled": False, "confirm_write": truthy}
-    )
+    env = await call(mcp, "switch_set_poe", {"port": 1, "enabled": False, "confirm_write": truthy})
 
     # CLAIMED INVARIANT: a mutating cgi request leaves the process only on the BOOLEAN
     # confirm_write=True ("truthy strings do not count", write_gate; master-plan #4).
@@ -46,9 +44,7 @@ async def test_falsey_string_is_still_refused(tmp_path, falsey) -> None:
     backend, _ = write_backend(tmp_path, switch, port_map="cam1=1")
     mcp = build_mcp(backend)
 
-    env = await call(
-        mcp, "switch_set_poe", {"port": 1, "enabled": False, "confirm_write": falsey}
-    )
+    env = await call(mcp, "switch_set_poe", {"port": 1, "enabled": False, "confirm_write": falsey})
     assert env["success"] is False
     assert env["error"]["code"] == "WRITE_REFUSED"
     assert switch.count("POST", POE_CGI) == 0
