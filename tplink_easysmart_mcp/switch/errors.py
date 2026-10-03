@@ -139,3 +139,183 @@ class OutcomeUnknown(SwitchError):
     """A mutating request's connection was reset: the outcome must be re-read, not resent."""
 
     kind = "OUTCOME_UNKNOWN"
+
+
+# --- S3 tool-layer errors (port resolution, write guards, power-cycle) --------
+
+
+class UnknownPortName(SwitchError):
+    """A port argument was a name that is not in ``EASYSMART_PORT_MAP``."""
+
+    kind = "UNKNOWN_PORT"
+
+    def __init__(self, message: str, *, known_names: list[str] | None = None) -> None:
+        self.known_names = list(known_names or [])
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"known_names": self.known_names}
+
+
+class InvalidPort(SwitchError):
+    """A port argument was out of range (``1..max_port``) or not a port at all."""
+
+    kind = "INVALID_PORT"
+
+    def __init__(
+        self, message: str, *, port: int | None = None, max_port: int | None = None
+    ) -> None:
+        self.port = port
+        self.max_port = max_port
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"port": self.port, "max_port": self.max_port}
+
+
+class NotPoePort(SwitchError):
+    """A PoE write was asked for a port that does not carry PoE."""
+
+    kind = "NOT_POE_PORT"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        port: int | None = None,
+        poe_ports: list[int] | None = None,
+        poe_port_num: int | None = None,
+    ) -> None:
+        self.port = port
+        self.poe_ports = list(poe_ports or [])
+        self.poe_port_num = poe_port_num
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"port": self.port, "poe_ports": self.poe_ports, "poe_port_num": self.poe_port_num}
+
+
+class ProtectedPort(SwitchError):
+    """A write was refused because the port is in ``EASYSMART_PROTECTED_PORTS``."""
+
+    kind = "PROTECTED_PORT"
+
+    def __init__(
+        self, message: str, *, port: int | None = None, protected_ports: list[int] | None = None
+    ) -> None:
+        self.port = port
+        self.protected_ports = list(protected_ports or [])
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"port": self.port, "protected_ports": self.protected_ports}
+
+
+class WriteVerifyFailed(SwitchError):
+    """The re-read after a write did not match the intended change (or clobbered a field)."""
+
+    kind = "WRITE_VERIFY_FAILED"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        before: dict[str, Any] | None = None,
+        after: dict[str, Any] | None = None,
+    ) -> None:
+        self._before = before
+        self._after = after
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"before": self._before, "after": self._after}
+
+
+class InvalidArgument(SwitchError):
+    """A tool argument failed validation (for example ``off_seconds`` out of bounds)."""
+
+    kind = "INVALID_ARGUMENT"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        argument: str | None = None,
+        allowed: dict[str, Any] | None = None,
+    ) -> None:
+        self.argument = argument
+        self.allowed = dict(allowed or {})
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"argument": self.argument, "allowed": self.allowed}
+
+
+class AlreadyOff(SwitchError):
+    """A power-cycle was asked for a port whose PoE is already off; nothing to do."""
+
+    kind = "ALREADY_OFF"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        port: int | None = None,
+        name: str | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> None:
+        self.port = port
+        self.name = name
+        self._state = state
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"port": self.port, "name": self.name, "state": self._state}
+
+
+class CycleInProgress(SwitchError):
+    """Another power-cycle is already running (in-process lock or a fresh state marker)."""
+
+    kind = "CYCLE_IN_PROGRESS"
+
+    def __init__(
+        self, message: str, *, started_at: float | None = None, age_s: float | None = None
+    ) -> None:
+        self.started_at = started_at
+        self.age_s = age_s
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"started_at": self.started_at, "age_s": self.age_s}
+
+
+class CycleIncomplete(SwitchError):
+    """A power-cycle could not be completed; the port may be left UNPOWERED."""
+
+    kind = "CYCLE_INCOMPLETE"
+
+    def __init__(self, message: str, *, context: dict[str, Any] | None = None) -> None:
+        self._context = dict(context or {})
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return dict(self._context)
+
+
+class PowerNotRestored(SwitchError):
+    """PoE was re-enabled but the PD did not draw power before the timeout."""
+
+    kind = "POWER_NOT_RESTORED"
+
+    def __init__(self, message: str, *, context: dict[str, Any] | None = None) -> None:
+        self._context = dict(context or {})
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return dict(self._context)
+
+
+class NotSupported(SwitchError):
+    """The feature's page is absent or not in the expected shape on this firmware."""
+
+    kind = "NOT_SUPPORTED"

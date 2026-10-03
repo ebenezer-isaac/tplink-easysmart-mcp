@@ -12,7 +12,21 @@ from tplink_easysmart_mcp.core.errors import ConfigError
 from tplink_easysmart_mcp.server import MCP_ENV_PREFIX, build_server
 from tplink_easysmart_mcp.switch.config import SwitchSettings
 
-EXPECTED_TOOLS = {"switch_status", "switch_check_auth", "switch_login", "switch_logout"}
+EXPECTED_TOOLS = {
+    "switch_status",
+    "switch_check_auth",
+    "switch_login",
+    "switch_logout",
+    "switch_get_system_info",
+    "switch_get_ports",
+    "switch_get_port_stats",
+    "switch_get_poe",
+    "switch_get_vlans",
+    "switch_resolve_port",
+    "switch_set_poe",
+    "switch_set_port",
+    "switch_poe_cycle",
+}
 
 PLACEHOLDER = {
     "env_prefix": "EASYSMART_",
