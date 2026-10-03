@@ -1,12 +1,11 @@
 # 02 — Easy Smart switch MCP (standalone repo `tplink-easysmart-mcp`)
 
 **Repo:**
-- Path: `E:/projects-working-dir/tplink-easysmart-mcp`.
 - Package: `tplink_easysmart_mcp`.
 - Console script: `tplink-easysmart-mcp`.
 - License: MIT, **public**.
 
-It is one of three **standalone** repos (owner decision); it is not part of a consolidated server. Like the other two, it shares no protocol code.
+It is one of several **standalone** repos (a design decision); it is not part of a consolidated server. Like the others, it shares no protocol code.
 
 **Layout:**
 - `tplink_easysmart_mcp/core/` is **copied verbatim** from `vigi-nvr-mcp/vigi_nvr_mcp/core/`, the self-contained device-agnostic template: config base, envelope, errors, redact, write_gate, breaker, serial, transport, server, cli. It is **not** re-implemented. The only permitted edits are import paths and the env prefix.
@@ -77,7 +76,7 @@ It is one of three **standalone** repos (owner decision); it is not part of a co
 ### Session
 
 - **Model.** Either IP-bound or `H_P_SSID` cookie (Max-Age 600). The client is the same for both: `GET /` first, and keep a jar.
-- **Treat it as single-session.** The owner's browser and the MCP evict each other (reference issues #2 and #7, both on TL-SG1016PE).
+- **Treat it as single-session.** The operator's browser and the MCP evict each other (reference issues #2 and #7, both on TL-SG1016PE).
 - **Rules:**
   - Log in lazily.
   - If a data GET returns `LOGIN_PAGE`, re-login **exactly once** and re-GET. A second `LOGIN_PAGE` means `SESSION_LOST`.
@@ -126,15 +125,15 @@ It is one of three **standalone** repos (owner decision); it is not part of a co
 | `LOGIN_COOLDOWN_S` (300) | Minimum gap between a failed or unconfirmed login and the next attempt. Persisted (see S2). |
 | `CYCLE_OFF_MIN_S` / `CYCLE_OFF_MAX_S` (5 / 120) | Bounds for `off_seconds` |
 | `CYCLE_POWER_TIMEOUT_S` (60) | How long to wait for `powerstatus == on` after re-enable |
-| `LOGOUT_AFTER_READS` (false) | If true, read tools also log out. Use it when the owner works in the web UI often. |
+| `LOGOUT_AFTER_READS` (false) | If true, read tools also log out. Use it when the operator works in the web UI often. |
 
 ---
 
-## Phase S0 — LIVE fixture capture (orchestrator-run, owner present)
+## Phase S0 — LIVE fixture capture (orchestrator-run, operator present)
 
 **Preconditions:**
 - No repo code is needed. This can run before S1.
-- The owner is **logged out of the switch web UI**, and no browser tab is open on it.
+- The operator is **logged out of the switch web UI**, and no browser tab is open on it.
 - The password is in `~/.secrets/tplink-switch.pw` on the LAN server, mode 0600, written with `printf '%s'` so it has **no trailing newline**.
 - Run the capture **on the LAN server only**. The password is cleartext on the wire.
 - **Only `GET` `*.htm`. The only POST is the single `logon.cgi`. Fetch no other `*.cgi`, and no page whose name contains Reboot, Reset, Upgrade, Saving, Backup or Restore.**
@@ -183,7 +182,7 @@ rm -f "$J"
 6. **Menu:** the page names for save-config, reboot and cable diagnostics, plus whether the classic UI has an explicit "Save Config".
 7. **Diff:** every difference from `switch-protocol.md`. The S1 agent applies these.
 
-**Done when** the live fixtures are in the repo with `check_no_secrets` passing, `S0-findings.md` exists, and the owner has confirmed the web UI still works afterwards.
+**Done when** the live fixtures are in the repo with `check_no_secrets` passing, `S0-findings.md` exists, and the operator has confirmed the web UI still works afterwards.
 
 **If S0 is not yet possible.** S1 may proceed on the synthetic fixtures. Every parser constant that S0 must confirm sits in `tplink_easysmart_mcp/switch/constants.py`, and each one carries the comment `# S0: confirm`. These are a fact table, not stubs.
 
@@ -191,7 +190,7 @@ rm -f "$J"
 
 **Step 0: scaffold commit.** This is a separate commit, `chore: scaffold from vigi-nvr-mcp core`. It is **not counted** in the S1 budget, because it is a verbatim copy.
 
-1. Copy the following into a fresh `git init` of `E:/projects-working-dir/tplink-easysmart-mcp`:
+1. Copy the following into a fresh `git init` of the `tplink-easysmart-mcp` repo:
    - `vigi-nvr-mcp/vigi_nvr_mcp/core/` to `tplink_easysmart_mcp/core/`;
    - its tests to `tests/core/`;
    - `scripts/gate.py` and `scripts/check_no_secrets.py`;
@@ -520,11 +519,11 @@ Dry-run:
 - `tplink-easysmart-mcp --list-tools` lists all 11 tools: `switch_status`, `switch_check_auth`, `switch_login`, and the 8 from this phase;
 - `tplink_easysmart_mcp/switch/` coverage is ≥ 85 %.
 
-## Phase S4 — LIVE verification (orchestrator-run, owner present)
+## Phase S4 — LIVE verification (orchestrator-run, operator present)
 
 **Preconditions:**
 - S0 is done.
-- The owner is logged out of the web UI.
+- The operator is logged out of the web UI.
 - The camera port to cycle has been chosen: one non-critical camera.
 - `EASYSMART_PROTECTED_PORTS` holds the uplink port and the server's port.
 - `EASYSMART_PORT_MAP` is set.
@@ -533,7 +532,7 @@ Dry-run:
 **Steps:**
 1. `tplink-easysmart-mcp check-auth`: probe only. Expect `plain_form`, `normal`, and the S0 `session_model`.
 2. `tplink-easysmart-mcp check-auth --login`: one login. Expect `hw/fw` to match S0.
-3. Read tools: `switch_get_system_info`, `switch_get_ports`, `switch_get_poe`, `switch_get_vlans`, `switch_get_port_stats`. Compare them with the S0 captures and with what the owner sees physically (LEDs, which cameras are on).
+3. Read tools: `switch_get_system_info`, `switch_get_ports`, `switch_get_poe`, `switch_get_vlans`, `switch_get_port_stats`. Compare them with the S0 captures and with what the operator sees physically (LEDs, which cameras are on).
 4. Dry-run the cycle: `EASYSMART_DRY_RUN=true`, then `switch_poe_cycle("<camera>", 10, confirm_write=True)`. Read both bodies and check them against the S0 PoE-form findings, especially `AUTO_LIMIT2`.
 5. Live cycle with `DRY_RUN=false` on the chosen camera.
    - Watch for `powered_at` and `power_w`.
@@ -543,7 +542,7 @@ Dry-run:
 7. Negative checks:
    - `switch_poe_cycle` on a protected port → `PROTECTED_PORT`, with no request in the logs;
    - port 9 → `NOT_POE_PORT`.
-8. The owner logs into the web UI to confirm it still works and the port settings are intact. The MCP is idle while they do this.
+8. The operator logs into the web UI to confirm it still works and the port settings are intact. The MCP is idle while they do this.
 
 Record the sanitised results as `docs/protocol/easysmart-switch-verified.md`, then delete `~/switch-capture/`.
 
