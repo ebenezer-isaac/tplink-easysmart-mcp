@@ -6,60 +6,100 @@ import pytest
 
 from tplink_easysmart_mcp.core.redact import REDACTED, TRUNCATED, redact
 
-CT = "cipher" + "text"  # assembled so the secret scan does not flag this file
-
 
 def test_redacts_sensitive_top_level_keys() -> None:
-    src = {CT: "QUJD", "password": "p", "key": "k", "stok": "s", "name": "cam"}
+    src = {
+        "password": "p",
+        "cpassword": "c",
+        "cookie": "x",
+        "H_P_SSID": "tplink_abc",
+        "token": "t",
+        "secret": "s",
+        "Authorization": "Basic zzz",
+        "name": "cam",
+    }
     assert redact(src) == {
-        CT: REDACTED,
         "password": REDACTED,
-        "key": REDACTED,
-        "stok": REDACTED,
+        "cpassword": REDACTED,
+        "cookie": REDACTED,
+        "H_P_SSID": REDACTED,
+        "token": REDACTED,
+        "secret": REDACTED,
+        "Authorization": REDACTED,
         "name": "cam",
     }
 
 
 @pytest.mark.parametrize(
-    "field", ["Password", "PASSWORD", "password_md5", "passwordConfirm", "passwd", "Stok", "KEY"]
+    "field",
+    [
+        "Password",
+        "PASSWORD",
+        "new_password",
+        "passwordConfirm",
+        "passwd",
+        "user_pwd",
+        "api_token",
+        "SessionToken",
+        "client_secret",
+        "Set-Cookie",
+        "h_p_ssid",
+    ],
 )
-def test_key_matching_is_case_insensitive_and_prefix_based(field: str) -> None:
+def test_sensitive_substrings_are_redacted_case_insensitively(field: str) -> None:
     assert redact({field: "v"}) == {field: REDACTED}
 
 
-@pytest.mark.parametrize("field", ["keyframe", "monkey", "username", "stock", "password_hint_x"])
-def test_similar_but_safe_keys_are_kept_except_password_prefix(field: str) -> None:
-    result = redact({field: "v"})
-    if field.lower().startswith("password"):
-        assert result == {field: REDACTED}
-    else:
-        assert result == {field: "v"}
+# Negative set: the switch's port / PoE / system fields must never be eaten.
+@pytest.mark.parametrize(
+    "field",
+    [
+        "power_w",
+        "voltage_v",
+        "current_ma",
+        "pd_class",
+        "priority",
+        "portid",
+        "poe_port_num",
+        "name_ppowerlimit",
+        "name_pstate",
+        "speed_config",
+        "link_up",
+        "username",
+        "firmware",
+        "hardware",
+        "session_model",
+        "max_port_num",
+    ],
+)
+def test_port_and_poe_field_names_survive(field: str) -> None:
+    assert redact({field: "v"}) == {field: "v"}
 
 
 def test_nested_dicts_and_lists() -> None:
     src = {
-        "channel": [
-            {"chn_1": {"ip": "192.0.2.21", CT: "AAAA", "auth": {"password": "x"}}},
-            {"chn_2": {"ip": "192.0.2.22", "user": "admin"}},
+        "ports": [
+            {"port_1": {"ip": "192.0.2.21", "power_w": 4.1, "auth": {"password": "x"}}},
+            {"port_2": {"ip": "192.0.2.22", "user": "admin"}},
         ],
-        "meta": [[{"stok": "t"}]],
+        "meta": [[{"cookie": "t"}]],
     }
     assert redact(src) == {
-        "channel": [
-            {"chn_1": {"ip": "192.0.2.21", CT: REDACTED, "auth": {"password": REDACTED}}},
-            {"chn_2": {"ip": "192.0.2.22", "user": "admin"}},
+        "ports": [
+            {"port_1": {"ip": "192.0.2.21", "power_w": 4.1, "auth": {"password": REDACTED}}},
+            {"port_2": {"ip": "192.0.2.22", "user": "admin"}},
         ],
-        "meta": [[{"stok": REDACTED}]],
+        "meta": [[{"cookie": REDACTED}]],
     }
 
 
 def test_sensitive_container_values_are_replaced_wholesale() -> None:
-    assert redact({"key": {"n": 1, "e": 2}}) == {"key": REDACTED}
+    assert redact({"token": {"n": 1, "e": 2}}) == {"token": REDACTED}
     assert redact({"password": ["a", "b"]}) == {"password": REDACTED}
 
 
 def test_input_is_never_mutated() -> None:
-    src = {"a": [{"password": "x", "b": {"stok": "y"}}], "t": ("k", {"key": 1})}
+    src = {"a": [{"password": "x", "b": {"cookie": "y"}}], "t": ("k", {"token": 1})}
     snapshot = copy.deepcopy(src)
     out = redact(src)
     assert src == snapshot
@@ -69,7 +109,7 @@ def test_input_is_never_mutated() -> None:
 
 
 def test_tuples_become_lists() -> None:
-    assert redact(("a", {"key": 1})) == ["a", {"key": REDACTED}]
+    assert redact(("a", {"token": 1})) == ["a", {"token": REDACTED}]
 
 
 @pytest.mark.parametrize("value", [None, 0, 1.5, True, "text", ""])
@@ -78,7 +118,7 @@ def test_scalars_pass_through(value: object) -> None:
 
 
 def test_non_string_keys_are_preserved() -> None:
-    assert redact({1: "a", 2: {"stok": "x"}}) == {1: "a", 2: {"stok": REDACTED}}
+    assert redact({1: "a", 2: {"cookie": "x"}}) == {1: "a", 2: {"cookie": REDACTED}}
 
 
 def test_depth_bomb_is_truncated_not_crashing() -> None:

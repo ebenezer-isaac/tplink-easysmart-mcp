@@ -1,69 +1,156 @@
-"""Login circuit breaker (device-agnostic).
+"""Persistent login circuit breaker (device-agnostic, file-backed, fail-closed).
 
 Many embedded devices lock the admin account after a handful of failed logins.
-The breaker keeps an immutable per-process ledger and decides, before any
-network I/O, whether a login attempt may be made at all. Once the failure
-budget is spent the breaker stays open until the process restarts.
+The breaker records a single durable fact — "a login has failed, do not try
+again until a human intervenes" — in a JSON file under the device's state dir, so
+the decision survives a process restart (the copied in-process version lost it).
+
+Safety rules:
+
+* The state file is written atomically (temp file + ``os.replace``) and chmod
+  ``0600`` so a password-adjacent detail can never be world-readable.
+* **Fail closed.** A state file that is present but unreadable or corrupt is
+  treated as *open*: if we cannot prove the breaker is clear, we refuse to log
+  in. Only an absent file (never tripped) or an explicit ``open: false`` lets a
+  login through.
+* Clearing is an explicit human action (``<console-script> breaker --clear``).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import contextlib
+import json
+import os
+import re
+import tempfile
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from .config import DeviceSettings
 from .errors import LockoutGuard
 
-# Implicit (automatic) logins stop when the device reports this few attempts left.
-IMPLICIT_LOGIN_MIN_REMAINING = 3
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _slug(device: str) -> str:
+    cleaned = _UNSAFE.sub("_", device.strip()) or "device"
+    return cleaned[:64]
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return value
 
 
 @dataclass(frozen=True)
-class LoginLedger:
-    failed: int = 0
-    successful: int = 0
-    last_failure: dict[str, Any] | None = None
+class BreakerState:
+    open: bool
+    corrupt: bool = False
+    opened_at: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def snapshot(self) -> dict[str, Any]:
+        """A JSON-safe, secret-free view for the healthcheck and the CLI."""
+        return {
+            "open": self.open,
+            "corrupt": self.corrupt,
+            "opened_at": self.opened_at,
+            "details": dict(self.details),
+        }
 
 
-def record_failure(ledger: LoginLedger, failure: dict[str, Any]) -> LoginLedger:
-    return replace(ledger, failed=ledger.failed + 1, last_failure=dict(failure))
+class LoginBreaker:
+    """A persistent, fail-closed login breaker for one device."""
 
+    def __init__(
+        self,
+        state_dir: str | os.PathLike[str],
+        device: str,
+        *,
+        clear_hint: str = "clear it after fixing the cause",
+    ) -> None:
+        self._path = Path(state_dir) / f"breaker-{_slug(device)}.json"
+        self._clear_hint = clear_hint
 
-def record_success(ledger: LoginLedger) -> LoginLedger:
-    return replace(ledger, successful=ledger.successful + 1)
+    @property
+    def path(self) -> Path:
+        return self._path
 
-
-def check_login_allowed(ledger: LoginLedger, settings: DeviceSettings, *, explicit: bool) -> None:
-    """Raise LockoutGuard if policy forbids a login attempt right now."""
-    if settings.login_disabled:
-        raise LockoutGuard(
-            f"Login refused: {settings.env_name('LOGIN_DISABLED')}=true. Authentication is frozen."
+    def state(self) -> BreakerState:
+        """Read the breaker's current state. Unreadable/corrupt ⇒ open (fail closed)."""
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return BreakerState(open=False)
+        except OSError:
+            return BreakerState(
+                open=True, corrupt=True, details={"reason": "unreadable state file"}
+            )
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return BreakerState(open=True, corrupt=True, details={"reason": "state file corrupt"})
+        if not isinstance(data, dict) or not isinstance(data.get("open"), bool):
+            return BreakerState(open=True, corrupt=True, details={"reason": "state file malformed"})
+        if not data["open"]:
+            return BreakerState(open=False)
+        opened_at = data.get("opened_at")
+        return BreakerState(
+            open=True,
+            opened_at=opened_at if isinstance(opened_at, int | float) else None,
+            details=dict(data["details"]) if isinstance(data.get("details"), dict) else {},
         )
-    if ledger.failed >= settings.max_login_failures:
-        raise LockoutGuard(
-            f"Login refused: {ledger.failed} failed login(s) in this process "
-            f"(limit {settings.max_login_failures}, {settings.env_name('MAX_LOGIN_FAILURES')}). "
-            "Fix the credentials, check the device's lockout state, then restart the server."
+
+    @property
+    def is_open(self) -> bool:
+        return self.state().open
+
+    def check(self) -> None:
+        """Raise ``LockoutGuard`` if the breaker is open. No I/O beyond the read."""
+        state = self.state()
+        if not state.open:
+            return
+        reason = (
+            state.details.get("reason") or state.details.get("code") or "a previous login failed"
         )
-    if not explicit and ledger.failed > 0:
         raise LockoutGuard(
-            "Login refused: a previous login failed. Automatic logins are disabled; "
-            "use the explicit login tool after fixing the cause."
+            f"Login refused: the circuit breaker is open ({reason}). "
+            f"The account may be locked on the device; {self._clear_hint}."
         )
 
+    def record_failure(self, details: dict[str, Any] | None = None) -> None:
+        """Trip the breaker and persist why. Idempotent; overwrites any prior state."""
+        payload = {
+            "open": True,
+            "opened_at": time.time(),
+            "details": {k: _json_safe(v) for k, v in (details or {}).items()},
+        }
+        self._atomic_write(payload)
 
-def check_remaining_attempts(remaining: int | None, *, explicit: bool) -> None:
-    """Guard on the device-reported remaining-attempts counter (None = unknown)."""
-    if remaining is None:
-        return
-    if remaining <= 0:
-        raise LockoutGuard(
-            "Login refused: the device reports 0 login attempts remaining; the account is "
-            "locked or about to be. Wait for the lock to expire."
-        )
-    if not explicit and remaining < IMPLICIT_LOGIN_MIN_REMAINING:
-        raise LockoutGuard(
-            f"Login refused: the device reports only {remaining} attempt(s) remaining. "
-            "Automatic login is suspended; use the explicit login tool if you are sure "
-            "the credentials are correct."
-        )
+    def clear(self) -> None:
+        """Reset the breaker (an explicit human action). A no-op if already clear."""
+        with contextlib.suppress(FileNotFoundError):
+            self._path.unlink()
+
+    def _atomic_write(self, payload: dict[str, Any]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(payload, sort_keys=True).encode("utf-8")
+        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), prefix=".breaker-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self._path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+
+# Callable clock type, re-exported for the switch cooldown that mirrors this module.
+Clock = Callable[[], float]

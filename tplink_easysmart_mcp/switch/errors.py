@@ -1,15 +1,17 @@
-"""Switch-specific exceptions used by the pure parsers and form builders.
+"""Switch-specific exceptions on top of the device-agnostic ``core.errors``.
 
-These extend the device-agnostic ``core.errors`` hierarchy so they flow through
-the shared envelope machinery. Phase S2 adds the authentication/session error
-codes (AUTH_FAILED, SESSIONS_FULL, SESSION_BUSY, LOGIN_COOLDOWN, ...) on top of
-this module; the three defined here are everything the S1 parsing layer needs.
+Each class carries a stable ``kind`` used verbatim as the envelope error code, so
+an LLM client can branch on a fixed vocabulary. The S1 parsing layer needs only
+``ProtocolError``, ``SessionExpired`` and ``RestoredAccountMode``; S2 adds the
+authentication/session codes.
 
 Request and parsing logic is ported from ``vmakeev/hass_tplink_easy_smart``
 (MIT, (c) 2022 Vladimir Makeev); none of its files are copied.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from ..core.errors import DeviceError
 
@@ -50,3 +52,90 @@ class RestoredAccountMode(SwitchError):
     """
 
     kind = "RESTORED_ACCOUNT_MODE"
+
+    def __init__(self, message: str, *, err_type: int | None = None) -> None:
+        self.err_type = err_type
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"err_type": self.err_type}
+
+
+class _ErrTypeError(SwitchError):
+    """Base for the errType-mapped login errors; records the raw ``logonInfo``."""
+
+    kind = "SWITCH_ERROR"
+
+    def __init__(self, message: str, *, err_type: int | None = None) -> None:
+        self.err_type = err_type
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"err_type": self.err_type}
+
+
+class AuthFailed(_ErrTypeError):
+    """errType 1: wrong username or password. Trips the breaker; never retried."""
+
+    kind = "AUTH_FAILED"
+
+
+class LockedOut(_ErrTypeError):
+    """errType 2: the user is not allowed to log in. Trips the breaker."""
+
+    kind = "LOCKED_OUT"
+
+
+class SessionsFull(_ErrTypeError):
+    """errType 3/4: no free login slot. Cooldown, not a breaker trip."""
+
+    kind = "SESSIONS_FULL"
+
+
+class SessionTimeout(_ErrTypeError):
+    """errType 5: the session timed out. Cooldown, not a breaker trip."""
+
+    kind = "SESSION_TIMEOUT"
+
+
+class AuthVariantUnsupported(SwitchError):
+    """The login page is the encrypted (or unknown) variant. Fail closed, no POST."""
+
+    kind = "AUTH_VARIANT_UNSUPPORTED"
+
+
+class LoginNotAccepted(SwitchError):
+    """errType 0 but the confirm GET returned the login page (reference issue #49)."""
+
+    kind = "LOGIN_NOT_ACCEPTED"
+
+
+class SessionBusy(SwitchError):
+    """``GET /`` returned a data page with an empty jar: another IP holds the session."""
+
+    kind = "SESSION_BUSY"
+
+
+class SessionLost(SwitchError):
+    """A data page returned the login page twice: a single re-login did not recover it."""
+
+    kind = "SESSION_LOST"
+
+
+class CooldownActive(SwitchError):
+    """A login was refused because a recent failure is still within the cooldown."""
+
+    kind = "LOGIN_COOLDOWN"
+
+    def __init__(self, message: str, *, retry_after_s: int) -> None:
+        self.retry_after_s = retry_after_s
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"retry_after_s": self.retry_after_s}
+
+
+class OutcomeUnknown(SwitchError):
+    """A mutating request's connection was reset: the outcome must be re-read, not resent."""
+
+    kind = "OUTCOME_UNKNOWN"
