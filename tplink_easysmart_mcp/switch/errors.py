@@ -157,6 +157,22 @@ class UnknownPortName(SwitchError):
         return {"known_names": self.known_names}
 
 
+class AmbiguousPortName(SwitchError):
+    """A port name matched more than one ``EASYSMART_PORT_MAP`` entry."""
+
+    kind = "AMBIGUOUS_NAME"
+
+    def __init__(
+        self, message: str, *, name: str | None = None, ports: list[int] | None = None
+    ) -> None:
+        self.name = name
+        self.ports = list(ports or [])
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"name": self.name, "ports": self.ports}
+
+
 class InvalidPort(SwitchError):
     """A port argument was out of range (``1..max_port``) or not a port at all."""
 
