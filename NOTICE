@@ -1,0 +1,26 @@
+tplink-easysmart-mcp
+Copyright (c) 2026 Ebenezer Isaac and contributors
+
+This product is licensed under the MIT License (see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party credits
+-------------------------------------------------------------------------------
+
+The HTTP request flow and the inline-variable / PoE / port parsing logic in
+tplink_easysmart_mcp/switch/ (parsers.py, forms.py, jsvars.py, and the auth
+flow added in later phases) are PORTED from:
+
+    vmakeev/hass_tplink_easy_smart
+    Home Assistant integration for TP-Link Easy Smart switches
+    Copyright (c) 2022 Vladimir Makeev
+    Licensed under the MIT License
+    https://github.com/vmakeev/hass_tplink_easy_smart
+
+The logic (page names, inline-variable layout, PoE read scales and status codes,
+the PoE write field names including the misspelled "applay", and the errType
+table) is re-implemented here; none of that project's source files are copied.
+
+Page and variable names were cross-checked against several read-only references
+(TP-Link Easy Smart siblings). The GPL-licensed tplinkrouterc6u project was NOT
+read or copied; only page names already present in public endpoint maps were used.
