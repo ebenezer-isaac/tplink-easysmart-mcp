@@ -50,7 +50,13 @@ _TLS_SUFFIXES = ("VERIFY_TLS", "TLS_FINGERPRINT_SHA256")
 
 ENV_PREFIX = "EASYSMART_"
 MAX_PORT = 64  # hard sanity bound; the live max_port_num is checked at runtime
-_PORT_NAME = re.compile(r"[A-Za-z0-9_.-]{1,32}")
+# Parsing charset (rejects unicode / control chars / separators). Leading digits
+# are permitted here so a name can be parsed and then rejected with a clear error.
+_PORT_NAME = re.compile(r"[A-Za-z0-9 _.-]{1,32}")
+# The strict rule enforced at the env boundary: a name must start with a letter and
+# never be purely numeric, so an int and a str of the same digits can never both be
+# a valid handle for different things (breaker finding TC-F5).
+_STRICT_PORT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9 _.-]{0,31}")
 _DEFAULT_STATE_DIR = str(Path.home() / ".local" / "state" / "tplink-easysmart-mcp")
 
 
@@ -247,9 +253,26 @@ def load_switch_settings(environ: dict[str, str]) -> SwitchSettings:
     }
     field_to_env = {field: ENV_PREFIX + suffix for suffix, field in SWITCH_ENV_SUFFIXES.items()}
     try:
-        return SwitchSettings.model_validate({**raw, "env_prefix": ENV_PREFIX})
+        settings = SwitchSettings.model_validate({**raw, "env_prefix": ENV_PREFIX})
     except ValidationError as exc:
         raise ConfigError(_format(exc, field_to_env)) from None
+    _reject_numeric_port_names(settings)
+    return settings
+
+
+def _reject_numeric_port_names(settings: SwitchSettings) -> None:
+    """A ``PORT_MAP`` name must start with a letter and never be purely numeric.
+
+    Otherwise a numeric name could shadow a literal port number (TC-F5): the same
+    token resolving to two different physical ports by argument type alone.
+    """
+    bad = [name for name, _ in settings.port_map if not _STRICT_PORT_NAME.fullmatch(name)]
+    if bad:
+        raise ConfigError(
+            f"{ENV_PREFIX}PORT_MAP: name(s) {bad} are invalid; a name must start with a letter "
+            "and match [A-Za-z][A-Za-z0-9 _.-]{0,31} (purely numeric names and names starting "
+            "with a digit are refused so they cannot shadow a literal port number)."
+        )
 
 
 def _format(exc: ValidationError, field_to_env: dict[str, str]) -> str:

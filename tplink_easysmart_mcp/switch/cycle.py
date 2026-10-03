@@ -1,16 +1,26 @@
 """``switch_poe_cycle``: power-cycle one PoE camera safely.
 
 The dangerous part of a cycle is the window where the port is OFF: a crash, an
-eviction or a tripped breaker must never leave a camera dark silently. So:
+eviction, a tripped breaker, a cancellation or any other failure must never leave
+a camera dark silently. So the moment the OFF form is submitted a ``try/finally``
+takes over and **guarantees a restore attempt** on every exit path:
 
 * Only one cycle runs per backend at a time — a non-blocking in-process
   ``asyncio.Lock`` plus a **state-file marker** under ``EASYSMART_STATE_DIR`` that
   survives a crash. A second call while a marker is fresh (< 5 min) is refused as
   ``CYCLE_IN_PROGRESS``; a marker older than that is reported as stale and the new
   cycle is allowed to proceed (it overwrites it).
-* Once the port has been turned OFF, **every** failure path still attempts to turn
-  it back ON and reports both outcomes (``CYCLE_INCOMPLETE`` naming the port that
-  may be UNPOWERED).
+* From the instant the OFF form is submitted, the ``finally`` re-runs the ON
+  sequence (submit + verify, with its own single re-login allowance and its own
+  error capture) on **every** exit — a normal return, a ``DeviceError``, an
+  ``OutcomeUnknown`` connection reset, ``asyncio.CancelledError``,
+  ``KeyboardInterrupt`` or any other ``BaseException``. Cancellation and keyboard
+  interrupts are re-raised *after* the restore attempt; every other failure
+  becomes a ``CYCLE_INCOMPLETE`` envelope reporting ``off_outcome``,
+  ``on_outcome``, ``port_state_after`` (from a final re-read when possible) and
+  ``may_be_unpowered``.
+* A connection reset on the OFF submit or the OFF verify is reported honestly
+  (``OUTCOME_UNKNOWN`` for the off step) and the port is still driven back on.
 * After re-enabling, power draw is polled until the PD actually pulls current;
   PoE-on-but-no-draw is ``POWER_NOT_RESTORED`` (not a success).
 
@@ -20,29 +30,26 @@ whole state machine runs under a fake clock in tests with no real waiting.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-import json
 import logging
-import os
-import tempfile
-import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from ..core.breaker import Clock, _slug
-from ..core.errors import DeviceError
+from ..core.errors import DeviceError, TransportError
 from .config import MAX_PORT, SwitchSettings
 from .errors import (
     AlreadyOff,
     CycleIncomplete,
     CycleInProgress,
     InvalidArgument,
+    OutcomeUnknown,
     PowerNotRestored,
     WriteVerifyFailed,
 )
 from .forms import RequestPlan, build_poe_port_form, plan_redacted
+from .marker import CycleMarker
 from .models import PoePort, PoeStatus
 from .tools_read import poe_view, resolve_port
 from .tools_write import refuse_non_poe_config, refuse_non_poe_live, refuse_protected
@@ -53,93 +60,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 2
-MARKER_STALE_AFTER_S = 300
+
+# Re-exported so ``backend`` / the breaker tests keep importing it from ``cycle``.
+__all__ = ["CycleMarker", "PoeCycleInput", "poe_cycle_op"]
 
 
 class PoeCycleInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     port_or_name: int | str
-
-
-class CycleMarker:
-    """A crash-visible 'a cycle is in progress' marker file for one switch."""
-
-    def __init__(
-        self, state_dir: str | os.PathLike[str], device: str, *, now: Clock = time.time
-    ) -> None:
-        self._path = Path(state_dir) / f"cycle-{_slug(device)}.json"
-        self._now = now
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def begin(self, port: int, name: str | None) -> None:
-        """Claim the marker, or raise ``CycleInProgress`` if a fresh one exists."""
-        existing = self._read()
-        if existing is not None:
-            started_at = existing.get("started_at")
-            age = self._now() - started_at if isinstance(started_at, int | float) else None
-            if age is not None and age < MARKER_STALE_AFTER_S:
-                raise CycleInProgress(
-                    "a power-cycle marker is already present and still fresh; refusing to start "
-                    "a second cycle",
-                    started_at=started_at,
-                    age_s=round(age, 3),
-                )
-            log.warning(
-                "stale power-cycle marker (age %ss) found; a previous cycle likely crashed — "
-                "proceeding and overwriting it",
-                round(age, 3) if age is not None else "unknown",
-            )
-        self._write({"started_at": self._now(), "port": port, "name": name})
-
-    def end(self) -> None:
-        with contextlib.suppress(FileNotFoundError):
-            self._path.unlink()
-
-    def snapshot(self) -> dict[str, Any]:
-        existing = self._read()
-        if existing is None:
-            return {"in_progress": False}
-        started_at = existing.get("started_at")
-        age = self._now() - started_at if isinstance(started_at, int | float) else None
-        return {
-            "in_progress": True,
-            "started_at": started_at,
-            "age_s": round(age, 3) if age is not None else None,
-            "stale": age is not None and age >= MARKER_STALE_AFTER_S,
-            "port": existing.get("port"),
-            "name": existing.get("name"),
-        }
-
-    def _read(self) -> dict[str, Any] | None:
-        try:
-            raw = self._path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return None
-        except OSError:
-            # Unreadable: surface it as a stale marker (allow recovery), not a lock.
-            return {"started_at": None}
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return {"started_at": None}
-        return data if isinstance(data, dict) else {"started_at": None}
-
-    def _write(self, payload: dict[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(payload, sort_keys=True).encode("utf-8")
-        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), prefix=".cycle-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, self._path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
 
 
 def _validate_off_seconds(value: object, settings: SwitchSettings) -> int:
@@ -183,7 +111,6 @@ async def _run_cycle(
 ) -> dict[str, Any]:
     settings = backend.settings
     client = backend.client
-    now = backend.now
     async with client.session_scope(logout_after=True):
         snap = await client.poe()
         backend.observe_poe_port_num(snap.poe_port_num)
@@ -214,57 +141,246 @@ async def _run_cycle(
                     "sleep_s": off_seconds,
                 },
             }
-        # --- turn off (harmless if it fails: the port is still on) ---
-        await client.submit(off_form)
-        off_state = (await client.poe()).ports[port - 1]
-        if off_state.enabled:
-            raise WriteVerifyFailed(
-                f"port {port} ({name}) PoE did not turn off; the cycle was aborted before any "
-                "outage",
-                before=before_view,
-                after=poe_view(settings, off_state),
-            )
-        off_at = now()
-        # --- from here the port is OFF: every failure must still attempt ON ---
+        return await _off_then_on(backend, port, name, off_seconds, before_view, off_form, on_form)
+
+
+async def _off_then_on(
+    backend: EasySmartSwitchBackend,
+    port: int,
+    name: str | None,
+    off_seconds: int,
+    before_view: dict[str, Any],
+    off_form: RequestPlan,
+    on_form: RequestPlan,
+) -> dict[str, Any]:
+    """Submit OFF, then guarantee an ON restore attempt in ``finally`` on every exit."""
+    settings = backend.settings
+    client = backend.client
+    now = backend.now
+
+    off_outcome = "ok"  # "ok" (confirmed) | "unknown" (connection reset)
+    off_at: float | None = None
+    off_took = False  # the off-verify read confirmed the port actually went off
+    off_view: dict[str, Any] | None = None
+    cancel: BaseException | None = None
+    phase_error: BaseException | None = None
+    on_report: _OnReport | None = None
+
+    try:
+        # --- the OFF form is submitted: the danger window is now open ---
         try:
-            await backend.sleep(off_seconds)
-            after = await _turn_on_with_retry(backend, port, name, on_form, before_view)
-            on_at = now()
-            powered, last = await _poll_power(backend, port, on_at)
-            if not powered:
-                raise PowerNotRestored(
-                    f"port {port} ({name}): PoE is ON but the device drew no power within "
-                    f"{settings.cycle_power_timeout_s}s",
-                    context={"port": port, "name": name, "poe": poe_view(settings, last)},
-                )
-            return {
-                "port": port,
-                "name": name,
-                "outcome": "cycled",
-                "off_for_s": round(on_at - off_at, 3),
-                "off_at": off_at,
-                "on_at": on_at,
-                "powered_at": now(),
-                "power_w": last.power_w,
-                "pd_class": last.pd_class,
-                "before": before_view,
-                "after": poe_view(settings, after),
-            }
-        except (PowerNotRestored, CycleIncomplete):
-            raise  # the port is ON (PowerNotRestored) or ON was already retried
-        except DeviceError as exc:
-            on_outcome = await _best_effort_on(backend, on_form)
-            raise CycleIncomplete(
-                f"port {port} ({name}) may be UNPOWERED: the cycle failed after the port was "
-                f"turned off ({exc})",
-                context={
-                    "port": port,
-                    "name": name,
-                    "off_outcome": "ok",
-                    "on_outcome": on_outcome,
-                    "error": getattr(exc, "kind", "DEVICE_ERROR"),
-                },
-            ) from exc
+            await client.submit(off_form)
+        except OutcomeUnknown:
+            # The POST landed-or-not; never resend. Settle by the restore's re-read.
+            off_outcome = "unknown"
+        else:
+            off_state = (await client.poe()).ports[port - 1]
+            off_view = poe_view(settings, off_state)
+            off_took = not off_state.enabled
+            if off_took:
+                off_at = now()
+                await backend.sleep(off_seconds)
+    except (asyncio.CancelledError, KeyboardInterrupt) as exc:
+        cancel = exc
+    except TransportError as exc:
+        # The connection to the switch dropped mid-cycle (e.g. the off-verify read
+        # was reset); we can no longer confirm the off, and the session is gone.
+        phase_error = exc
+        if off_outcome == "ok":
+            off_outcome = "unknown"
+    except DeviceError as exc:
+        phase_error = exc
+    except BaseException as exc:
+        phase_error = exc
+    finally:
+        if isinstance(phase_error, TransportError):
+            on_report = await _restore_on_connection_lost(backend, port, name, on_form)
+        else:
+            on_report = await _restore_on(backend, port, name, on_form, before_view)
+
+    clean = off_outcome == "ok" and phase_error is None and cancel is None
+    if clean and off_took:
+        return _finish(settings, port, name, off_at, now, before_view, on_report)
+    if clean and not off_took:
+        # The off-verify read cleanly showed the port still enabled: the OFF never
+        # took, so there was no outage. The restore's ON is a harmless no-op.
+        raise WriteVerifyFailed(
+            f"port {port} ({name}) PoE did not turn off; the cycle was aborted before any outage",
+            before=before_view,
+            after=off_view or before_view,
+        )
+    if cancel is not None:
+        # Restore has been attempted; now honour cooperative cancellation.
+        raise cancel
+    raise _incomplete(port, name, off_outcome, on_report)
+
+
+def _finish(
+    settings: SwitchSettings,
+    port: int,
+    name: str | None,
+    off_at: float | None,
+    now: Any,
+    before_view: dict[str, Any],
+    on_report: _OnReport,
+) -> dict[str, Any]:
+    """Assemble the success envelope for the clean path, or raise if the ON failed."""
+    if on_report.on_outcome != "ok":
+        raise _incomplete(port, name, "ok", on_report)
+    if not on_report.powered:
+        raise PowerNotRestored(
+            f"port {port} ({name}): PoE is ON but the device drew no power within "
+            f"{settings.cycle_power_timeout_s}s",
+            context={"port": port, "name": name, "poe": on_report.after},
+        )
+    on_at = on_report.on_at if on_report.on_at is not None else now()
+    last = on_report.last
+    return {
+        "port": port,
+        "name": name,
+        "outcome": "cycled",
+        "off_for_s": round(on_at - off_at, 3) if off_at is not None else None,
+        "off_at": off_at,
+        "on_at": on_at,
+        "powered_at": now(),
+        "power_w": last.power_w if last else None,
+        "pd_class": last.pd_class if last else None,
+        "before": before_view,
+        "after": on_report.after,
+    }
+
+
+def _incomplete(
+    port: int, name: str | None, off_outcome: str, on_report: _OnReport | None
+) -> CycleIncomplete:
+    report = on_report or _OnReport(on_outcome="not_attempted")
+    may_be_unpowered = report.port_state_after != "on"
+    return CycleIncomplete(
+        f"port {port} ({name}) may be UNPOWERED: the cycle could not be completed after the "
+        f"port was turned off (off step: {off_outcome}, on step: {report.on_outcome})",
+        context={
+            "port": port,
+            "name": name,
+            "off_outcome": off_outcome,
+            "on_outcome": report.on_outcome,
+            "error": report.error,
+            "port_state_after": report.port_state_after,
+            "may_be_unpowered": may_be_unpowered,
+            "after": report.after,
+        },
+    )
+
+
+class _OnReport:
+    """The outcome of a single best-effort ON (restore) attempt. Never raised."""
+
+    __slots__ = ("after", "error", "last", "on_at", "on_outcome", "port_state_after", "powered")
+
+    def __init__(
+        self,
+        *,
+        on_outcome: str,
+        error: str | None = None,
+        powered: bool = False,
+        after: dict[str, Any] | None = None,
+        last: PoePort | None = None,
+        on_at: float | None = None,
+        port_state_after: str = "unknown",
+    ) -> None:
+        self.on_outcome = on_outcome
+        self.error = error
+        self.powered = powered
+        self.after = after
+        self.last = last
+        self.on_at = on_at
+        self.port_state_after = port_state_after
+
+
+async def _restore_on(
+    backend: EasySmartSwitchBackend,
+    port: int,
+    name: str | None,
+    on_form: RequestPlan,
+    before_view: dict[str, Any],
+) -> _OnReport:
+    """Drive the port back ON and report the outcome. Never raises.
+
+    The read/verify inside ``client.poe()`` carries the client's own single
+    re-login allowance (an evicted session is recovered exactly once). Every
+    error is captured so the caller can report it; a final re-read settles the
+    port's real state for ``port_state_after``.
+    """
+    settings = backend.settings
+    try:
+        after = await _turn_on_with_retry(backend, port, name, on_form, before_view)
+    except CycleIncomplete as exc:
+        details = exc.details()
+        return _OnReport(
+            on_outcome="failed",
+            error="ON_NOT_CONFIRMED",
+            after=details.get("after"),
+            port_state_after=await _settle_state(backend, port),
+        )
+    except OutcomeUnknown:
+        state = await _settle_state(backend, port)
+        return _OnReport(
+            on_outcome="unknown",
+            error="OUTCOME_UNKNOWN",
+            after=await _safe_view(backend, port),
+            port_state_after=state,
+        )
+    except DeviceError as exc:
+        return _OnReport(
+            on_outcome="failed",
+            error=getattr(exc, "kind", "DEVICE_ERROR"),
+            after=await _safe_view(backend, port),
+            port_state_after=await _settle_state(backend, port),
+        )
+    except Exception:
+        log.warning("best-effort re-enable raised an unexpected error", exc_info=True)
+        return _OnReport(
+            on_outcome="failed",
+            error="INTERNAL_ERROR",
+            port_state_after=await _settle_state(backend, port),
+        )
+    on_at = backend.now()
+    powered, last = await _poll_power_safe(backend, port, on_at)
+    return _OnReport(
+        on_outcome="ok",
+        powered=powered,
+        after=poe_view(settings, after),
+        last=last,
+        on_at=on_at,
+        port_state_after="on" if after.enabled else "off",
+    )
+
+
+async def _restore_on_connection_lost(
+    backend: EasySmartSwitchBackend, port: int, name: str | None, on_form: RequestPlan
+) -> _OnReport:
+    """Restore ON after the connection to the switch dropped. Never raises.
+
+    A transport failure means the session is gone. We refuse to silently re-login
+    (that could spend a login attempt against a possibly-locked switch — the
+    lockout-safety rule), so we end the broken session and make exactly one
+    best-effort unauthenticated ON POST. An unreachable or logged-out switch will
+    not apply it, leaving the port off; a final re-read settles the real state so
+    the envelope can report ``may_be_unpowered`` honestly.
+    """
+    client = backend.client
+    with contextlib.suppress(Exception):
+        await client.logout()
+    on_outcome = "attempted"
+    try:
+        await client.raw_post(on_form.path, on_form.fields)
+    except Exception:
+        on_outcome = "failed"
+    return _OnReport(
+        on_outcome=on_outcome,
+        error="CONNECTION_LOST",
+        after=await _safe_view(backend, port),
+        port_state_after=await _settle_state(backend, port),
+    )
 
 
 async def _turn_on_with_retry(
@@ -301,6 +417,15 @@ async def _turn_on_with_retry(
     )
 
 
+async def _poll_power_safe(
+    backend: EasySmartSwitchBackend, port: int, start_t: float
+) -> tuple[bool, PoePort | None]:
+    try:
+        return await _poll_power(backend, port, start_t)
+    except Exception:
+        return False, None
+
+
 async def _poll_power(
     backend: EasySmartSwitchBackend, port: int, start_t: float
 ) -> tuple[bool, PoePort]:
@@ -316,13 +441,18 @@ async def _poll_power(
         last = (await client.poe()).ports[port - 1]
 
 
-async def _best_effort_on(backend: EasySmartSwitchBackend, on_form: RequestPlan) -> str:
-    """Try once more to re-enable PoE, swallowing any error, and report the outcome."""
+async def _settle_state(backend: EasySmartSwitchBackend, port: int) -> str:
+    """Re-read once to settle the port's real admin state; 'unknown' if unreadable."""
     try:
-        await backend.client.submit(on_form)
-    except DeviceError as exc:
-        return f"failed:{getattr(exc, 'kind', 'DEVICE_ERROR')}"
+        state = (await backend.client.poe()).ports[port - 1]
     except Exception:
-        log.warning("best-effort re-enable raised an unexpected error", exc_info=True)
-        return "failed"
-    return "attempted"
+        return "unknown"
+    return "on" if state.enabled else "off"
+
+
+async def _safe_view(backend: EasySmartSwitchBackend, port: int) -> dict[str, Any] | None:
+    try:
+        state = (await backend.client.poe()).ports[port - 1]
+    except Exception:
+        return None
+    return poe_view(backend.settings, state)

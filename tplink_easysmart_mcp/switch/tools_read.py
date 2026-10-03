@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .config import MAX_PORT, SwitchSettings
 from .constants import ANCHOR_PVID, VLAN_PVID
-from .errors import InvalidPort, NotSupported, ProtocolError, UnknownPortName
+from .errors import AmbiguousPortName, InvalidPort, NotSupported, ProtocolError, UnknownPortName
 from .models import PoePort, PoeSnapshot, PoeStatus, PortState, PortStats, SessionModel
 from .parsers import parse_pvids
 
@@ -68,28 +68,42 @@ class ResolveInput(BaseModel):
 def resolve_port(arg: object, *, settings: SwitchSettings, max_port: int) -> ResolvedPort:
     """Turn an ``int`` or a ``PORT_MAP`` name into a validated ``(port, name)``.
 
-    * A known name (case-insensitive) resolves to its mapped port.
-    * A bare integer (or an all-ASCII-digit string) is range-checked.
-    * An unknown name raises ``UnknownPortName`` listing the known names.
-    * An out-of-range or non-port value raises ``InvalidPort``.
+    Resolution is **type-stable**: an ``int``, or a ``str`` of ASCII digits, is
+    ALWAYS a port number and is never looked up as a name — so ``resolve_port(3)``
+    and ``resolve_port("3")`` always mean the same physical port and a numeric name
+    can never shadow a literal port. A non-numeric ``str`` is a name
+    (case-insensitive, whitespace-trimmed). An unknown name raises
+    ``UnknownPortName``; a name that matches more than one map entry raises
+    ``AmbiguousPortName``; an out-of-range or non-port value raises ``InvalidPort``.
     """
-    names = settings.port_map_dict
     if isinstance(arg, bool):  # bool is an int subclass; never a port
         raise InvalidPort("port must be an integer or a name, not a boolean", max_port=max_port)
     if isinstance(arg, int):
         return _checked(arg, settings, max_port)
     if isinstance(arg, str):
         text = arg.strip()
-        key = text.lower()
-        if key in names:
-            return _checked(names[key], settings, max_port, name=key)
-        if text.isascii() and text.isdigit():
+        if text.isascii() and text.isdigit():  # a digit string is ALWAYS a port number
             return _checked(int(text), settings, max_port)
-        raise UnknownPortName(
-            f"unknown port name {text[:64]!r}; known names: {sorted(names)}",
-            known_names=sorted(names),
-        )
+        return _resolve_name(text, settings, max_port)
     raise InvalidPort("port must be an integer or a name", max_port=max_port)
+
+
+def _resolve_name(text: str, settings: SwitchSettings, max_port: int) -> ResolvedPort:
+    key = text.lower()
+    matches = sorted({mapped for name, mapped in settings.port_map if name.lower() == key})
+    if len(matches) > 1:
+        raise AmbiguousPortName(
+            f"port name {text[:64]!r} maps to more than one port {matches}; refusing to guess",
+            name=text[:64],
+            ports=matches,
+        )
+    if matches:
+        return _checked(matches[0], settings, max_port, name=key)
+    known = sorted(n for n, _ in settings.port_map)
+    raise UnknownPortName(
+        f"unknown port name {text[:64]!r}; known names: {known}",
+        known_names=known,
+    )
 
 
 def _checked(
