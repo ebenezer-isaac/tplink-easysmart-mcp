@@ -80,10 +80,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 ignore = []
 
 [tool.ruff.lint.isort]
-# ``vigi_nvr_mcp`` is the canonical package name imported by the verbatim, hashed
-# conformance test (and its test-only alias shim); treat it as first-party so ruff
-# does not try to reorder that byte-identical file (which would break the identity test).
-known-first-party = ["tplink_easysmart_mcp", "vigi_nvr_mcp"]
+known-first-party = ["tplink_easysmart_mcp"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S108", "S324", "S505"]

@@ -1,18 +1,18 @@
-"""Shared test setup: put the ``vigi_nvr_mcp`` conformance shim on ``sys.path``.
+"""Shared test setup.
 
-The canonical breaker conformance suite is copied verbatim (so the core-identity
-test can hash it) and imports the canonical package name ``vigi_nvr_mcp``. That
-name is provided by a test-only alias under ``tests/_vigi_shim`` which re-exports
-this repo's byte-identical ``core``. Inserting the directory here makes it
-importable in the pytest process; a ``multiprocessing`` ``spawn`` child inherits
-the parent's ``sys.path``, so the concurrency cases resolve it too.
-"""
+The breaker conformance suite (``tests/conformance/test_breaker_contract.py``) is
+copied verbatim from the canonical repo and hashed by ``core/VERSION``, so it must
+not name any one package. It resolves ``breaker``/``errors``/``state`` from the
+``core_pkg`` fixture below (and its spawned multiprocess workers import the same
+package by the path passed through their arguments, ``core_pkg.__name__``)."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import pytest
 
-_SHIM = Path(__file__).resolve().parent / "_vigi_shim"
-if str(_SHIM) not in sys.path:
-    sys.path.insert(0, str(_SHIM))
+
+@pytest.fixture
+def core_pkg():
+    import tplink_easysmart_mcp.core as core  # this repo's core package
+
+    return core

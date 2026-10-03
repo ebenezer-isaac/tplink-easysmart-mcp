@@ -86,14 +86,12 @@ Therefore:
 - The conformance suite (`tests/conformance/`) is likewise copied verbatim and
   hashed.
 
-### The `tests/_vigi_shim` test alias
+### The conformance suite is package-agnostic
 
-The verbatim conformance test imports the canonical package name `vigi_nvr_mcp`.
-`tests/_vigi_shim/` is a **test-only** alias that re-exports this repo's `core`
-under that name; `tests/conftest.py` puts it on `sys.path`. It is **not packaged or
-installed** — the wheel ships only `tplink_easysmart_mcp` (`pyproject.toml`
-`[tool.hatch.build.targets.wheel] packages`), and `_vigi_shim` lives under `tests/`,
-reachable only during the test run. Do not import it from runtime code.
+The verbatim conformance test names no package. It resolves `breaker`/`errors`/`state`
+from the one-line `core_pkg` fixture in `tests/conftest.py` (which returns this repo's
+`tplink_easysmart_mcp.core`), and its spawned `multiprocessing` workers import the same
+package by the path passed through their arguments. No namespace shim is needed.
 
 ## License
 
